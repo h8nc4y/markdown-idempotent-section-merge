@@ -1,0 +1,67 @@
+name: Bug report
+description: Report a sanitized problem with the skill, fixtures, or reference implementation.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Do not paste tokens, credentials, raw agent transcripts with private data, private repository names, internal absolute paths, or real maintained documents. Synthetic Markdown reproductions (like the fixtures) are ideal.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Describe the observable problem without private data.
+      placeholder: Merging a section whose body contains a fenced "## ..." line produced...
+    validations:
+      required: true
+  - type: dropdown
+    id: symptom
+    attributes:
+      label: Symptom class
+      options:
+        - Section duplicated after a merge
+        - Replace range cut short inside a code fence
+        - Fenced "## ..." literal treated as the next section boundary
+        - "###" subheading ended the range early
+        - Merge not idempotent (second run still changes the file)
+        - Following sections swallowed by a re-opened fence
+        - Reference implementation error or wrong exit code
+        - Fixture or self-test problem
+        - Documentation error or unclear guidance
+        - Other sanitized symptom
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Synthetic reproduction
+      description: Minimal synthetic input.md / section.md content (or a fixture name) that reproduces the problem.
+      placeholder: |
+        input.md: a document with "## Notes" whose body contains a fenced "## Template" line
+        section.md: the same section with one changed body line
+        command: python scripts/merge_section.py input.md section.md
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: The range should end at the next real H2 heading, not at the fenced line.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      placeholder: The merge stopped at the fenced line and left a stale tail behind.
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety confirmation
+      options:
+        - label: I removed tokens, credentials, customer data, private repository names, and internal absolute paths, and my reproduction is synthetic.
+          required: true
