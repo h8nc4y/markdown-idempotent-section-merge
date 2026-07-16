@@ -158,7 +158,10 @@ if ($null -ne $gitExe) {
                     # files from the scan on Linux/macOS.
                     $fullPath = Join-Path $root $entry
                     if (Test-Path -LiteralPath $fullPath -PathType Leaf) {
-                        $gitTrackedFiles.Add((Get-Item -LiteralPath $fullPath)) | Out-Null
+                        # -Force is required on Unix, where PowerShell treats
+                        # dotfiles (.gitignore, .editorconfig, ...) as hidden
+                        # and Get-Item would fail without it.
+                        $gitTrackedFiles.Add((Get-Item -LiteralPath $fullPath -Force)) | Out-Null
                     }
                 }
             }
@@ -176,10 +179,13 @@ if ($null -ne $gitTrackedFiles) {
     }
 } else {
     $scanMode = 'working-tree'
-    $files = Get-ChildItem -LiteralPath $root -Recurse -File | Where-Object {
-        $_.FullName -notmatch '\\.git(\\|$)' -and
-        $_.FullName -notmatch '\\node_modules(\\|$)' -and
-        $_.FullName -notmatch '\\.cache(\\|$)' -and
+    # -Force includes dotfiles and dot-directories, which are hidden on
+    # Unix; the exclusion patterns accept both path separators so .git and
+    # friends stay excluded on every platform.
+    $files = Get-ChildItem -LiteralPath $root -Recurse -File -Force | Where-Object {
+        $_.FullName -notmatch '[\\/]\.git([\\/]|$)' -and
+        $_.FullName -notmatch '[\\/]node_modules([\\/]|$)' -and
+        $_.FullName -notmatch '[\\/]\.cache([\\/]|$)' -and
         $_.Name -ne '.private-markers.local' -and
         (Test-IsTextFile $_.FullName)
     }

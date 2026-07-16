@@ -175,6 +175,12 @@ You can also write C:\Users\<name>\project to describe a user directory.
         New-Item -ItemType Directory -Path $subDir -Force | Out-Null
         $syntheticSubMarker = ('g' + 'hp_') + 'synthetic_subdir_placeholder'
         Set-Content -LiteralPath (Join-Path $subDir 'leak.md') -Value "synthetic marker: $syntheticSubMarker" -Encoding UTF8
+        # Dotfiles are hidden on Unix; the scanner must still read them
+        # (regression guard: Get-Item without -Force fails on them there).
+        # ".editorconfig" is used because its whole name is its "extension"
+        # and it is on the scanner's text-file allowlist.
+        $syntheticDotMarker = ('xo' + 'xb-') + 'synthetic-dotfile-placeholder'
+        Set-Content -LiteralPath (Join-Path $gitRoot '.editorconfig') -Value "synthetic marker: $syntheticDotMarker" -Encoding UTF8
         & $gitCommand.Source -C $gitRoot add -A 2>$null
 
         $gitResult = Invoke-Scanner -ScanPath $gitRoot
@@ -187,8 +193,14 @@ You can also write C:\Users\<name>\project to describe a user directory.
         if ($gitResult.Output -notmatch 'sub/deep/leak\.md') {
             Add-Failure "Expected git-tracked output to list sub/deep/leak.md. Output: $($gitResult.Output.Trim())"
         }
-        if ($gitResult.Output.Contains($syntheticSubMarker)) {
-            Add-Failure 'Expected git-tracked finding to be redacted, but the raw marker leaked into output.'
+        if ($gitResult.Output -notmatch 'slack-bot-token-prefix') {
+            Add-Failure "Expected git-tracked output to flag the dotfile marker (slack-bot-token-prefix). Output: $($gitResult.Output.Trim())"
+        }
+        if ($gitResult.Output -notmatch '\.editorconfig') {
+            Add-Failure "Expected git-tracked output to list the .editorconfig dotfile. Output: $($gitResult.Output.Trim())"
+        }
+        if ($gitResult.Output.Contains($syntheticSubMarker) -or $gitResult.Output.Contains($syntheticDotMarker)) {
+            Add-Failure 'Expected git-tracked findings to be redacted, but a raw marker leaked into output.'
         }
     }
 }
