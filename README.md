@@ -26,9 +26,10 @@ to the next `^##` match" and breaks in two measured ways:
 
 The skill documents two safe boundary methods (fence-aware heading scan,
 fixed begin/end markers), the invariants that make replace-or-append well
-defined (`^##[^#]` boundaries, exactly one H2 per block), and a
-verification recipe — apply twice and require a zero diff, fence-aware
-heading count = 1, `git diff --stat` = one file.
+defined (H1/H2 boundaries — the folk `^##[^#]` hardened, exactly one
+heading per block, stop-and-report on malformed input), and a verification
+recipe — apply twice and require a zero diff, fence-aware heading
+count = 1, `git diff --stat` = one file.
 
 None of this is hypothetical: the repository ships the fence-blind
 implementation inside its test suite and proves the corruption on a fixture
@@ -157,8 +158,8 @@ python scripts/merge_section.py TARGET.md SECTION.md --check   # drift check (ex
 `## Heading`. LF/CRLF style and a UTF-8 BOM are preserved byte-for-byte.
 
 Fixtures under [`tests/fixtures/`](tests/fixtures) cover the trap case
-(heading inside a code fence), append, replace, and the `###` subheading
-boundary. The self-test needs no dependencies:
+(heading inside a code fence), append, replace, the `###` subheading
+boundary, and the `#` part boundary. The self-test needs no dependencies:
 
 ```bash
 python scripts/test_merge_section.py
@@ -219,18 +220,28 @@ repository paths you cannot publish, or customer data in public issues.
   to keep.
 - Documents (or blocks) that end inside an unclosed code fence are refused
   as malformed input — CommonMark runs such a fence to EOF, so a merge
-  would silently rewrite the visually swallowed tail.
+  would silently rewrite the visually swallowed tail. The same
+  stop-and-report rule covers CR-only line endings and a possible setext
+  heading inside the replaced span.
+- When only mixed line endings are normalized, the tool reports
+  `normalized` / `would-normalize` — it never claims "unchanged" while
+  rewriting bytes.
 - Never paste tokens, credentials, private logs, or customer data into
   issues, examples, or fixture files.
 
 ## Limitations
 
-- ATX headings at column 0 only; setext headings, closing-hash form
-  (`## X ##`), and 1–3 space indented headings are treated as body text.
-- Fence handling covers CommonMark's core column 0–3 backtick/tilde rules;
-  fences inside blockquotes or deep list indentation are out of scope.
-- UTF-8 documents only; mixed line endings are normalized to the detected
-  dominant style on the first write.
+- The managed heading must be a plain `## Name` at column 0 (closing-hash
+  headings work as boundaries but match by exact line, so `## X ##` and
+  `## X` are different headings).
+- Setext headings are never boundaries; a possible setext heading inside
+  the replaced span makes the merge refuse instead of deleting it.
+- Fence handling covers CommonMark's core column 0–3 backtick/tilde rules
+  (including the backtick-info-string exclusion); fences inside blockquotes
+  or deep list indentation are out of scope.
+- UTF-8 with LF or CRLF only; CR-only endings are refused, and files mixing
+  CRLF and LF are normalized to CRLF on the first write (reported as
+  `normalized`).
 
 ## Non-Goals
 

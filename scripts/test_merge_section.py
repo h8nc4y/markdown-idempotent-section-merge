@@ -27,12 +27,10 @@ import merge_section  # noqa: E402  (import after sys.path setup)
 
 REPO_ROOT = SCRIPTS_DIR.parent
 FIXTURES = REPO_ROOT / "tests" / "fixtures"
-FIXTURE_NAMES = [
-    "append-missing-section",
-    "replace-existing-section",
-    "subheading-boundary",
-    "trap-heading-inside-fence",
-]
+# Discover fixtures instead of hardcoding them, so a new fixture folder is
+# tested automatically (validate-oss-readiness.ps1 keeps the explicit
+# required-file list).
+FIXTURE_NAMES = sorted(path.name for path in FIXTURES.iterdir() if path.is_dir())
 
 
 def load(fixture, name):
@@ -78,6 +76,16 @@ def fence_blind_merge(document_text, block_text):
 
 class FixtureMergeTests(unittest.TestCase):
     """The correctness contract, checked on every fixture."""
+
+    def test_fixture_discovery_found_the_known_cases(self):
+        for name in (
+            "append-missing-section",
+            "h1-boundary",
+            "replace-existing-section",
+            "subheading-boundary",
+            "trap-heading-inside-fence",
+        ):
+            self.assertIn(name, FIXTURE_NAMES)
 
     def test_merge_matches_expected(self):
         for fixture in FIXTURE_NAMES:
@@ -180,6 +188,63 @@ class BlockValidationTests(unittest.TestCase):
         with self.assertRaises(merge_section.MergeError):
             merge_section.merge("# Doc\n", block)
 
+    def test_block_with_h1_is_rejected(self):
+        # An H1 inside the block would become a boundary on the next run
+        # and cut the maintained section in two.
+        with self.assertRaises(merge_section.MergeError):
+            merge_section.merge("# Doc\n", "## Notes\n\nbody\n\n# Part\n")
+
+    def test_block_heading_trailing_whitespace_is_normalized(self):
+        merged, _ = merge_section.merge(
+            "# T\n\n## Notes\n\nold.\n\n## Next\n\nkeep.\n", "## Notes  \n\nnew.\n"
+        )
+        self.assertIn("\n## Notes\n", merged)
+        self.assertNotIn("## Notes  ", merged)
+
+
+class BoundaryHardeningTests(unittest.TestCase):
+    """Boundary rules beyond the folk ``^##[^#]`` form, each measured."""
+
+    def test_indented_h2_ends_the_section(self):
+        doc = "## Notes\n\nold.\n\n  ## Indented\n\nindent body.\n\n## Next\n\nx.\n"
+        merged, _ = merge_section.merge(doc, "## Notes\n\nnew.\n")
+        self.assertIn("  ## Indented", merged)
+        self.assertIn("indent body.", merged)
+
+    def test_hash_without_space_is_not_a_boundary(self):
+        # CommonMark: "##hashtag" is a paragraph line, not a heading. It is
+        # part of the old body, so a replace consumes it and the real next
+        # section survives.
+        doc = "## Notes\n\nold.\n##hashtag style line\n\n## Next\n\nkeep.\n"
+        merged, _ = merge_section.merge(doc, "## Notes\n\nnew.\n")
+        self.assertNotIn("##hashtag", merged)
+        self.assertIn("## Next", merged)
+        self.assertIn("keep.", merged)
+
+    def test_backtick_info_string_does_not_open_a_fence(self):
+        # CommonMark: a backtick fence cannot carry backticks in its info
+        # string, so this line is body text and "## Next" stays a boundary.
+        doc = "## Notes\n\nold.\n```a`b\nstill body.\n\n## Next\n\nkeep.\n"
+        merged, _ = merge_section.merge(doc, "## Notes\n\nnew.\n")
+        self.assertIn("## Next", merged)
+        self.assertIn("keep.", merged)
+        self.assertNotIn("still body.", merged)
+
+    def test_stray_fence_after_non_fence_info_line_is_still_unclosed(self):
+        # The same document with a later bare ``` line: that one does open a
+        # fence, never closes, and the unclosed-fence guard refuses.
+        doc = "## Notes\n\nold.\n```a`b\n## Next\nkeep.\n```\n\n## Last\n\nx.\n"
+        with self.assertRaises(merge_section.MergeError):
+            merge_section.merge(doc, "## Notes\n\nnew.\n")
+
+    def test_setext_heading_inside_span_is_rejected(self):
+        doc = (
+            "## Notes\n\nold.\n\nNext Section\n------------\n\nkeep under "
+            "setext.\n\n## Last\n\nx.\n"
+        )
+        with self.assertRaises(merge_section.MergeError):
+            merge_section.merge(doc, "## Notes\n\nnew.\n")
+
 
 class FileLevelTests(unittest.TestCase):
     """Byte-level guarantees: EOL and BOM preservation, CLI exit codes."""
@@ -263,7 +328,33 @@ class FileLevelTests(unittest.TestCase):
         block = self._write("section.md", b"## One\n\n## Two\n")
         result = self._run_cli(str(target), str(block))
         self.assertEqual(result.returncode, 2)
-        self.assertIn("exactly one H2", result.stderr)
+        self.assertIn("exactly one", result.stderr)
+
+    def test_cr_only_line_endings_are_rejected(self):
+        target = self._write("target.md", b"# T\r\r## Notes\rold.\r")
+        block = self._write("section.md", b"## Notes\n\nnew.\n")
+        result = self._run_cli(str(target), str(block))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("CR line endings", result.stderr)
+
+    def test_mixed_eol_normalization_is_reported_not_hidden(self):
+        # Content is already canonical; only the mixed line endings change.
+        # The CLI must say so ("normalized"), not claim "unchanged".
+        target = self._write("target.md", b"# T\r\n\n## Notes\nnew.\n")
+        block = self._write("section.md", b"## Notes\nnew.\n")
+
+        check = self._run_cli(str(target), str(block), "--check")
+        self.assertEqual(check.returncode, 1)
+        self.assertIn("would-normalize", check.stdout)
+
+        first = self._run_cli(str(target), str(block))
+        self.assertEqual(first.returncode, 0)
+        self.assertIn("normalized", first.stdout)
+        self.assertEqual(target.read_bytes(), b"# T\r\n\r\n## Notes\r\nnew.\r\n")
+
+        second = self._run_cli(str(target), str(block))
+        self.assertEqual(second.returncode, 0)
+        self.assertIn("unchanged", second.stdout)
 
 
 if __name__ == "__main__":

@@ -162,6 +162,35 @@ You can also write C:\Users\<name>\project to describe a user directory.
     if ($localMarkerResult.Output -notmatch 'local-private-marker-1') {
         Add-Failure "Expected local marker output to name local-private-marker-1. Output: $($localMarkerResult.Output.Trim())"
     }
+
+    # git-tracked mode must find markers in subdirectories on every platform
+    # (regression guard: a backslash path conversion used to silently drop
+    # subdirectory files from POSIX scans).
+    $gitCommand = Get-Command git -ErrorAction SilentlyContinue
+    if ($null -ne $gitCommand) {
+        $gitRoot = Join-Path $tempRoot 'git-tracked'
+        New-Item -ItemType Directory -Path $gitRoot | Out-Null
+        & $gitCommand.Source -C $gitRoot init --quiet 2>$null
+        $subDir = Join-Path $gitRoot (Join-Path 'sub' 'deep')
+        New-Item -ItemType Directory -Path $subDir -Force | Out-Null
+        $syntheticSubMarker = ('g' + 'hp_') + 'synthetic_subdir_placeholder'
+        Set-Content -LiteralPath (Join-Path $subDir 'leak.md') -Value "synthetic marker: $syntheticSubMarker" -Encoding UTF8
+        & $gitCommand.Source -C $gitRoot add -A 2>$null
+
+        $gitResult = Invoke-Scanner -ScanPath $gitRoot
+        if ($gitResult.Output -notmatch 'git-tracked') {
+            Add-Failure "Expected the git fixture to scan in git-tracked mode. Output: $($gitResult.Output.Trim())"
+        }
+        if ($gitResult.ExitCode -eq 0) {
+            Add-Failure 'Expected git-tracked subdirectory marker fixture to fail, but scanner exited 0.'
+        }
+        if ($gitResult.Output -notmatch 'sub/deep/leak\.md') {
+            Add-Failure "Expected git-tracked output to list sub/deep/leak.md. Output: $($gitResult.Output.Trim())"
+        }
+        if ($gitResult.Output.Contains($syntheticSubMarker)) {
+            Add-Failure 'Expected git-tracked finding to be redacted, but the raw marker leaked into output.'
+        }
+    }
 }
 finally {
     if (Test-Path -LiteralPath $tempRoot) {

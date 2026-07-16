@@ -97,9 +97,13 @@ or boundary when it is outside every fence:
   long*, with nothing else on the line. An unclosed fence runs to the end
   of the document (CommonMark behaviour).
 - While inside a fence, nothing is a heading and nothing is a boundary.
-- The section boundary is the next H2-level heading only: `^##[^#]` in grep
-  terms (`###` is not a boundary). The reference implementation writes it
-  as `^##(?!#)` so a bare `##` line also counts.
+- The section boundary is the next heading of level 1 **or** 2. The folk
+  form is `^##[^#]` (exclude `###`); the reference hardens it to
+  `^ {0,3}#{1,2}([ \t]|$)`, which additionally treats an H1 as a boundary
+  (a part boundary must never be swallowed into a replace), accepts the
+  1–3 space indent CommonMark allows, and applies CommonMark's space rule
+  so a `##hashtag`-style paragraph line is not a false boundary. `###` is
+  still not a boundary either way.
 
 Use this method when the document format is not yours to change, or when
 the tool must work on arbitrary Markdown.
@@ -137,10 +141,11 @@ well defined:
 
 1. **The block starts with its own `## Heading` line** — the heading is
    part of the merged content, not configuration that can drift from it.
-2. **Exactly one H2-level heading inside the block** (fence-aware count).
-   A block with a second H2 would silently absorb the next section on the
-   following run. Fenced `## ...` literals inside the block are fine — they
-   do not count.
+2. **Exactly one H1/H2-level heading inside the block** — its own first
+   line (fence-aware count). A block with a second H2 would silently
+   absorb the next section on the following run; a block with an H1 would
+   cut itself in two. Fenced `## ...` literals inside the block are fine —
+   they do not count.
 3. **At most one copy of the heading in the target** (outside fences).
    If the document already contains duplicates, stop and report instead of
    "fixing" one of them and leaving the other.
@@ -153,6 +158,11 @@ well defined:
    extends the section to EOF (a replace would rewrite the whole visually
    swallowed tail), and in a block it would swallow whatever follows the
    merged section. Both are malformed input: stop and report.
+6. **No setext headings inside the replaced span.** A `===` or `---`
+   underline directly under a paragraph line is a real heading that a
+   line-by-line `^#` scan cannot see as a boundary. Replacing across one
+   would delete a section boundary without any error — stop and report
+   instead (convert the heading to ATX form, or use fixed markers).
 
 ## Verification Recipe
 
@@ -199,8 +209,11 @@ python scripts/merge_section.py TARGET.md SECTION.md --check   # drift check
 `SECTION.md` is the canonical block: first line is the exact `## Heading`.
 The target's LF/CRLF style and UTF-8 BOM are preserved; a missing target is
 created (append into an empty document). Malformed input — a duplicate
-heading in the target, a second H2 in the block, an unclosed fence in
-either — exits with code 2 instead of guessing.
+heading in the target, an extra heading in the block, an unclosed fence in
+either, CR-only line endings, a possible setext heading inside the span —
+exits with code 2 instead of guessing. When only mixed line endings need
+normalizing, the action is reported honestly as `normalized` /
+`would-normalize`, never as "unchanged".
 
 The fixtures under [`tests/fixtures/`](tests/fixtures) are one folder per
 case, each with `input.md`, `section.md`, and `expected.md`:
@@ -211,6 +224,7 @@ case, each with `input.md`, `section.md`, and `expected.md`:
 | `append-missing-section` | Absent section is appended with one separator line |
 | `replace-existing-section` | Present section is replaced in place |
 | `subheading-boundary` | `###` subheadings stay inside; range ends at the next real `##` |
+| `h1-boundary` | An `#` part heading ends the range instead of being swallowed |
 
 The self-test runs with no dependencies and is part of CI:
 
@@ -230,15 +244,22 @@ the scanner back into the trap, these tests fail first.
 
 ## Limitations
 
-- ATX headings at column 0 only. Setext headings (`Heading` +
-  `===`/`---` underline), closing-hash form (`## X ##`), and 1–3 space
-  indented headings are treated as body text. Keep canonical section
-  headings in plain `## Name` form at column 0.
+- The canonical heading itself must be a plain `## Name` at column 0.
+  Closing-hash headings (`## X ##`) do act as headings and boundaries, but
+  matching is by exact line — `## X ##` and `## X` are different headings
+  here, so keep the managed heading in plain form.
+- Setext headings (`Heading` + `===`/`---` underline) are never boundaries;
+  when one may sit inside the replaced span the reference refuses to merge
+  (invariant 6) rather than delete it silently. Convert setext headings to
+  ATX form, or switch to fixed markers.
 - Fence handling covers column 0–3 backtick/tilde fences per CommonMark's
-  core rules; exotic cases (fences inside blockquotes or deep list
-  indentation) are out of scope for the reference.
-- UTF-8 documents only. Mixed line endings are normalized to the detected
-  dominant style on the first write and are stable from the second run on.
+  core rules, including the backtick-info-string exclusion; exotic cases
+  (fences inside blockquotes or deep list indentation) are out of scope
+  for the reference.
+- UTF-8 documents with LF or CRLF line endings only. CR-only (classic Mac)
+  endings are refused — they would break byte idempotency. A file mixing
+  CRLF and LF is treated as CRLF (any CRLF present selects CRLF), rewritten
+  once as `normalized`, and stable from the second run on.
 - One file, one section per invocation — by design, so that verification
   stays sharp (`git diff --stat` = exactly one file).
 

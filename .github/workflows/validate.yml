@@ -11,12 +11,16 @@ permissions:
 
 jobs:
   validate:
-    name: Validate skill repository
-    # windows-latest is intentional and left unpinned: this job only needs
-    # pwsh + git + Python 3, so runner image migrations do not affect it.
-    # Pin to a dated label only if a future step depends on image-specific
-    # tooling.
-    runs-on: windows-latest
+    name: Validate skill repository (${{ matrix.os }})
+    # Both platforms on purpose: Windows covers the primary authoring
+    # environment; Ubuntu covers the POSIX paths the README documents
+    # (python3 + pwsh) and guards the scanner's forward-slash path handling.
+    # Labels are left unpinned: the job only needs pwsh + git + Python 3.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v5

@@ -74,6 +74,7 @@ so CI can require that a maintained section is already canonical:
 ```bash
 python3 scripts/merge_section.py TARGET.md SECTION.md --check
 # exit 0: up-to-date
-# exit 1: a merge would change the file (drift)
-# exit 2: invariant violation (bad block, duplicate headings) or usage error
+# exit 1: a merge (or line-ending normalization) would change the file
+# exit 2: invariant violation (bad block, duplicate headings, unclosed
+#         fence, CR-only endings, possible setext heading) or usage error
 ```

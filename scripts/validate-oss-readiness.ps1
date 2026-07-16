@@ -95,6 +95,7 @@ function Test-SkillFrontmatter {
 
 $fixtureNames = @(
     'append-missing-section',
+    'h1-boundary',
     'replace-existing-section',
     'subheading-boundary',
     'trap-heading-inside-fence'

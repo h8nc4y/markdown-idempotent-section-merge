@@ -152,7 +152,11 @@ if ($null -ne $gitExe) {
                 $gitTrackedFiles = New-Object System.Collections.Generic.List[object]
                 foreach ($entry in ($rawList -split "`0")) {
                     if ([string]::IsNullOrEmpty($entry)) { continue }
-                    $fullPath = Join-Path $root ($entry -replace '/', [string][char]92)
+                    # Keep git's forward slashes: Windows accepts them, and
+                    # they are the only valid separator on POSIX — converting
+                    # to backslashes here would silently drop subdirectory
+                    # files from the scan on Linux/macOS.
+                    $fullPath = Join-Path $root $entry
                     if (Test-Path -LiteralPath $fullPath -PathType Leaf) {
                         $gitTrackedFiles.Add((Get-Item -LiteralPath $fullPath)) | Out-Null
                     }
@@ -184,7 +188,7 @@ if ($null -ne $gitTrackedFiles) {
 foreach ($file in $files) {
     $relative = $file.FullName
     if ($relative.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) {
-        $relative = $relative.Substring($root.Length).TrimStart([char]92)
+        $relative = $relative.Substring($root.Length).TrimStart([char]92, [char]47)
     }
     $relative = $relative.Replace([string][char]92, '/')
     $lineNumber = 0
