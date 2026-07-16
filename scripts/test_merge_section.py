@@ -167,6 +167,19 @@ class BlockValidationTests(unittest.TestCase):
         with self.assertRaises(merge_section.MergeError):
             merge_section.merge(document, "## Twin\n\nC.\n")
 
+    def test_unclosed_fence_in_target_is_rejected(self):
+        # CommonMark runs an unclosed fence to EOF; a replace would then
+        # silently rewrite the whole visually swallowed tail. The reference
+        # stops and reports instead.
+        document = "## Notes\n\n```\nnever closed\n\n## Next\n\nx.\n"
+        with self.assertRaises(merge_section.MergeError):
+            merge_section.merge(document, "## Notes\n\nnew.\n")
+
+    def test_unclosed_fence_in_block_is_rejected(self):
+        block = "## Notes\n\n```\nnever closed\n"
+        with self.assertRaises(merge_section.MergeError):
+            merge_section.merge("# Doc\n", block)
+
 
 class FileLevelTests(unittest.TestCase):
     """Byte-level guarantees: EOL and BOM preservation, CLI exit codes."""

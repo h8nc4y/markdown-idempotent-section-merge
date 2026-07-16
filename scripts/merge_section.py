@@ -46,13 +46,14 @@ class MergeError(ValueError):
     """Raised when the block or the target violates a merge invariant."""
 
 
-def fence_states(lines):
-    """Map each line to True when it belongs to a fenced code block.
+def _fence_scan(lines):
+    """Return ``(states, open_at_end)``.
 
-    Both delimiter lines count as inside the block. A fence closes only on a
+    ``states`` maps each line to True when it belongs to a fenced code
+    block; both delimiter lines count as inside. A fence closes only on a
     run of the same character, at least as long as the opener, with nothing
     else on the line; an unclosed fence runs to the end of the document
-    (CommonMark behaviour).
+    (CommonMark behaviour), which ``open_at_end`` reports.
     """
     states = []
     open_char = ""
@@ -76,7 +77,12 @@ def fence_states(lines):
         ):
             open_char = ""
             open_len = 0
-    return states
+    return states, bool(open_char)
+
+
+def fence_states(lines):
+    """Map each line to True when it belongs to a fenced code block."""
+    return _fence_scan(lines)[0]
 
 
 def h2_indices(lines):
@@ -119,6 +125,10 @@ def validate_block(block_lines):
             "block must contain exactly one H2 heading outside code fences; "
             "found %d" % len(h2s)
         )
+    if _fence_scan(block_lines)[1]:
+        # An unclosed fence in the block would swallow whatever follows the
+        # merged section in the target — refuse instead of corrupting.
+        raise MergeError("block ends inside an unclosed code fence")
     return block_lines[0].rstrip()
 
 
@@ -132,6 +142,14 @@ def merge(document_text, block_text):
     block_lines = _split_lines(block_text)
     _strip_trailing_blank(block_lines)
     heading = validate_block(block_lines)
+
+    if _fence_scan(doc_lines)[1]:
+        # CommonMark runs an unclosed fence to EOF, so the section would
+        # extend to EOF and a replace would rewrite the whole visually
+        # swallowed tail. Malformed input: stop and report instead.
+        raise MergeError(
+            "target ends inside an unclosed code fence; close it before merging"
+        )
 
     occurrences = heading_occurrences(doc_lines, heading)
     if len(occurrences) > 1:

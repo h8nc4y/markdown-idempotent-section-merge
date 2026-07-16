@@ -148,6 +148,11 @@ well defined:
    lines; write exactly one blank line between the block and a following
    section. Reading range and writing shape then converge to the same
    bytes, which is what makes the second run a no-op.
+5. **No unclosed fences, in the target or in the block.** CommonMark runs an
+   unclosed fence to the end of the document, so in a target it silently
+   extends the section to EOF (a replace would rewrite the whole visually
+   swallowed tail), and in a block it would swallow whatever follows the
+   merged section. Both are malformed input: stop and report.
 
 ## Verification Recipe
 
@@ -193,7 +198,9 @@ python scripts/merge_section.py TARGET.md SECTION.md --check   # drift check
 
 `SECTION.md` is the canonical block: first line is the exact `## Heading`.
 The target's LF/CRLF style and UTF-8 BOM are preserved; a missing target is
-created (append into an empty document).
+created (append into an empty document). Malformed input — a duplicate
+heading in the target, a second H2 in the block, an unclosed fence in
+either — exits with code 2 instead of guessing.
 
 The fixtures under [`tests/fixtures/`](tests/fixtures) are one folder per
 case, each with `input.md`, `section.md`, and `expected.md`:

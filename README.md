@@ -217,6 +217,9 @@ repository paths you cannot publish, or customer data in public issues.
 - If the target already contains duplicate copies of the heading, the
   reference implementation stops and reports instead of guessing which copy
   to keep.
+- Documents (or blocks) that end inside an unclosed code fence are refused
+  as malformed input — CommonMark runs such a fence to EOF, so a merge
+  would silently rewrite the visually swallowed tail.
 - Never paste tokens, credentials, private logs, or customer data into
   issues, examples, or fixture files.
 

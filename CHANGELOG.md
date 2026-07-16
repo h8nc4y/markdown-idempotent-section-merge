@@ -16,8 +16,9 @@ The format loosely follows Keep a Changelog conventions.
   two safe boundary methods (fence-aware heading scan and fixed begin/end
   markers), the merge invariants (`^##[^#]` boundaries, exactly one H2 per
   block, at most one heading copy in the target, canonical separator
-  shape), and the verification recipe (apply-twice-diff-zero, fence-aware
-  heading count = 1, one-file `git diff --stat`).
+  shape, no unclosed fences), and the verification recipe
+  (apply-twice-diff-zero, fence-aware heading count = 1, one-file
+  `git diff --stat`).
 - Japanese full version of the skill (`docs/SKILL.ja.md`).
 - Reference implementation `scripts/merge_section.py` (Python 3, standard
   library only): fence-aware scanning, replace-or-append, `--check` drift
