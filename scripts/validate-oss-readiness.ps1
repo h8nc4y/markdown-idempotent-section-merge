@@ -154,6 +154,7 @@ Assert-FileContains -RelativePath 'SECURITY.md' -Pattern '(?is)root-level `\.git
 Assert-FileContains -RelativePath 'docs/private-marker-scanner-hardening.md' -Pattern '(?is)Git probe.*valid worktree.*scan root.*ancestor.*`\.git` file/directory.*fail closed' -Description 'detailed root-level Git metadata failure contract'
 Assert-FileContains -RelativePath 'docs/private-marker-scanner-hardening.md' -Pattern 'nested `\.git` directory' -Description 'detailed nested Git directory exclusion contract'
 Assert-FileContains -RelativePath 'docs/private-marker-scanner-hardening.md' -Pattern 'leaf `\.git` file' -Description 'detailed leaf Git metadata exclusion contract'
+Assert-FileContains -RelativePath 'scripts/test-scan-private-markers.ps1' -Pattern '(?is)invalid-ancestor-git-metadata-.*ancestorMetadataParent.*ancestorScanRoot.*expectedGitMetadataDiagnostic' -Description 'ancestor Git metadata failure regression'
 Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern 'validate-oss-readiness\.ps1' -Description 'OSS readiness validation in CI'
 Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern 'test_merge_section\.py' -Description 'reference implementation tests in CI'
 Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern 'scan-private-markers\.ps1' -Description 'private marker scan in CI'
