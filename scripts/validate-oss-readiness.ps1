@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$Path = ''
 )
@@ -119,8 +119,10 @@ $requiredFiles = @(
     'docs/SKILL.ja.md',
     'examples/before-after.md',
     'examples/verification-recipe.md',
+    'docs/private-marker-scanner-hardening.md',
     'scripts/merge_section.py',
     'scripts/test_merge_section.py',
+    'scripts/private-marker-process.ps1',
     'scripts/scan-private-markers.ps1',
     'scripts/test-scan-private-markers.ps1',
     'scripts/validate-oss-readiness.ps1'
@@ -145,12 +147,23 @@ Assert-FileContains -RelativePath 'README.md' -Pattern 'SECURITY\.md' -Descripti
 Assert-FileContains -RelativePath 'README.md' -Pattern 'docs/SKILL\.ja\.md' -Description 'link to the Japanese skill version'
 Assert-FileContains -RelativePath 'README.md' -Pattern 'merge_section\.py' -Description 'reference implementation usage'
 Assert-FileContains -RelativePath '.gitignore' -Pattern '\.private-markers\.local' -Description 'ignore local private marker files'
+Assert-FileContains -RelativePath '.editorconfig' -Pattern '(?ms)^\[\*\.ps1\].*?^charset\s*=\s*utf-8-bom\s*$' -Description 'PowerShell UTF-8 BOM compatibility'
 Assert-FileContains -RelativePath 'CONTRIBUTING.md' -Pattern '(?im)no token|never.*token|secret' -Description 'secret-safe contribution guidance'
 Assert-FileContains -RelativePath 'SECURITY.md' -Pattern '(?im)do not.*public|private|security' -Description 'private vulnerability reporting guidance'
+Assert-FileContains -RelativePath 'SECURITY.md' -Pattern '(?is)root-level `\.git` file or\s+directory.*fails closed.*Only nested\s+`\.git` directories and leaf `\.git` files' -Description 'root-versus-nested Git metadata scanner contract'
+Assert-FileContains -RelativePath 'docs/private-marker-scanner-hardening.md' -Pattern '(?is)Git probe.*valid worktree.*scan root.*ancestor.*`\.git` file/directory.*fail closed' -Description 'detailed root-level Git metadata failure contract'
+Assert-FileContains -RelativePath 'docs/private-marker-scanner-hardening.md' -Pattern 'nested `\.git` directory' -Description 'detailed nested Git directory exclusion contract'
+Assert-FileContains -RelativePath 'docs/private-marker-scanner-hardening.md' -Pattern 'leaf `\.git` file' -Description 'detailed leaf Git metadata exclusion contract'
 Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern 'validate-oss-readiness\.ps1' -Description 'OSS readiness validation in CI'
 Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern 'test_merge_section\.py' -Description 'reference implementation tests in CI'
 Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern 'scan-private-markers\.ps1' -Description 'private marker scan in CI'
 Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern 'test-scan-private-markers\.ps1' -Description 'private marker scan self-test in CI'
+Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern '(?m)^\s*uses:\s*actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09(?:\s+#\s*v5)?\s*$' -Description 'exact immutable checkout action revision'
+Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern '(?m)^\s*uses:\s*actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065(?:\s+#\s*v5)?\s*$' -Description 'exact immutable setup-python action revision'
+Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern 'windows-latest' -Description 'Windows validation runner in CI'
+Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern 'ubuntu-latest' -Description 'Ubuntu validation runner in CI'
+Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern 'timeout-minutes:\s*25' -Description 'bounded CI validation job'
+Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern 'shell:\s*powershell' -Description 'Windows PowerShell 5.1 validation in CI'
 
 Test-SkillFrontmatter
 

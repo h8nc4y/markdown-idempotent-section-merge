@@ -47,14 +47,28 @@ Public issues must not include:
 ## Scanner Coverage
 
 The private-marker scanner (`scripts/scan-private-markers.ps1`) is a
-best-effort safety net, not a guarantee. It scans git-tracked text files
-for a curated set of secret prefixes (GitHub, OpenAI, AWS, GCP, Slack,
-Stripe, PEM key blocks, and similar), private-looking absolute Windows
-paths, non-allowlisted GitHub repository URLs, and configured local
-markers, and it redacts any matched value. It does not detect every
-possible secret format and is no substitute for keeping real credentials
-out of the repository in the first place. Treat a passing scan as "no known
-marker found," not "definitely safe."
+best-effort safety net, not a guarantee. For git-tracked text paths, it
+scans both the exact index blob and a distinct current regular worktree
+snapshot. It reads intent-to-add from the index extended flags and
+rechecks raw stage/debug metadata immediately before reporting. It does
+not follow worktree links or fetch missing Git objects; ambiguous index,
+root, link, encoding, process, drift, count, or size states fail closed.
+File, entry, line, regex-match, finding, byte, process, output, and time
+budgets bound hostile input.
+If Git cannot establish a valid work tree, a root-level `.git` file or
+directory (or equivalent metadata on an ancestor) fails closed. Only nested
+`.git` directories and leaf `.git` files inside that non-Git scan root are
+treated as Git control metadata: the scanner excludes them and never follows
+their contents or external targets.
+
+The scanner checks a curated set of secret prefixes (GitHub, OpenAI, AWS,
+GCP, Slack, Stripe, PEM key blocks, and similar), private-looking absolute
+Windows paths, non-allowlisted GitHub repository URLs, and configured
+local markers, and it redacts any matched value.
+`.private-markers.local` must remain untracked. The scanner does not
+detect every possible secret format and is no substitute for keeping real
+credentials out of the repository in the first place. Treat a passing
+scan as "no known marker found," not "definitely safe."
 
 ## Response Expectations
 
