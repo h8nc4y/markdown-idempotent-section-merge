@@ -961,6 +961,44 @@ public static class SyntheticJobIdentityProbe
         }
     }
 
+    # scan root自身にmetadataが無くても、親階層の`.git`をGit probe失敗後に
+    # 見落としてはならない。directory/fileの両形をchild rootから固定する。
+    foreach ($metadataKind in @('directory', 'file')) {
+        $ancestorMetadataParent = Join-Path `
+            $tempRoot `
+            "invalid-ancestor-git-metadata-$metadataKind"
+        $ancestorScanRoot = Join-Path $ancestorMetadataParent 'scan-root'
+        New-Item `
+            -ItemType Directory `
+            -Path $ancestorScanRoot `
+            -Force | Out-Null
+        $ancestorMetadataPath = Join-Path $ancestorMetadataParent '.git'
+        if ($metadataKind -eq 'directory') {
+            New-Item `
+                -ItemType Directory `
+                -Path $ancestorMetadataPath `
+                -Force | Out-Null
+        } else {
+            [IO.File]::WriteAllText(
+                $ancestorMetadataPath,
+                'gitdir: ../synthetic-missing-git-directory',
+                [Text.UTF8Encoding]::new($false)
+            )
+        }
+        Set-Content `
+            -LiteralPath (Join-Path $ancestorScanRoot 'README.md') `
+            -Value 'synthetic clean content' `
+            -Encoding UTF8
+
+        $ancestorMetadataResult = Invoke-Scanner `
+            -ScanPath $ancestorScanRoot
+        if ($ancestorMetadataResult.ExitCode -ne 2 -or
+            $ancestorMetadataResult.Output.Trim() -cne
+                $expectedGitMetadataDiagnostic) {
+            Add-Failure "Expected invalid ancestor .git $metadataKind metadata to fail closed with the fixed diagnostic. Output: $($ancestorMetadataResult.Output.Trim())"
+        }
+    }
+
     # Higher-recall cloud / PEM prefixes, with one redaction regression each.
     # Fixtures are synthetic placeholders only; no real secrets are used.
     $prefixCases = @(
