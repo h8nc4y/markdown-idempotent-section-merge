@@ -11,5 +11,9 @@ indent_size = 4
 [*.{md,yml,yaml}]
 indent_size = 2
 
+[*.ps1]
+# Windows PowerShell 5.1 needs a BOM to parse the Japanese intent comments.
+charset = utf-8-bom
+
 [*.md]
 trim_trailing_whitespace = false

@@ -6,6 +6,42 @@ The format loosely follows Keep a Changelog conventions.
 
 ## Unreleased
 
+### Changed
+
+- Make the private-marker scanner hermetic and bounded across Windows and
+  POSIX. It now isolates every Git child from ambient `GIT_*` state, hooks,
+  filters, attributes, templates, traces, replace objects, lazy fetching,
+  and external transport protocols.
+- Scan the union of the exact index blob and the current regular worktree
+  snapshot. Read intent-to-add from extended index flags, reject conflicts,
+  gitlinks, symlink/reparse ancestry, missing blobs, malformed metadata,
+  and raw stage/debug drift immediately before success.
+- Read index content through one bounded `git cat-file --batch` stream and
+  impose finite budgets on child runtime/output/processes, filesystem
+  entries, scan targets, bytes, lines, regex matches, findings, and display
+  output. Invalid root-level or ancestor `.git` metadata fails closed, while
+  nested `.git` directories and leaf `.git` files inside a confirmed non-Git
+  fallback root remain excluded as Git control metadata.
+- Create the Windows target suspended, assign it atomically to a kill-on-close
+  Job, then resume it without a text-decoding wrapper. Isolate POSIX descendants
+  in a process group via `setsid` or an errno-aware same-host `libc` fallback.
+  Launch-failure cleanup now verifies termination and bounded wait results.
+- Escape control, bidi/format, and logical line-separator characters in
+  diagnostics. Hostile nonexistent paths fail with a fixed code. Finding
+  reports are emitted as one explicit UTF-8 payload whose prefix, header,
+  rows, and platform newlines all share the 16 KiB byte budget.
+- Treat `.env` variants, PEM/certificate/key files, `.npmrc`, and
+  extensionless text as scan candidates while preserving Unix-hidden
+  dotfile enumeration in both tracked and working-tree fallback modes.
+- Preserve the repository-only GitHub URL allowlist: this repository URL
+  remains accepted, while every other repository URL remains a finding.
+- Run scanner validation on Windows and Ubuntu, add Windows PowerShell 5.1
+  coverage, keep Japanese intent comments in UTF-8 with BOM, and bound each
+  CI matrix job to 25 minutes so both Windows hosts finish sequentially.
+- Pin GitHub Actions dependencies to full commit SHAs while retaining their
+  reviewed major-version annotations, and assert the exact revisions in the
+  readiness gate.
+
 ## 0.1.0 - 2026-07-16
 
 ### Added
