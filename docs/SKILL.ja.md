@@ -184,17 +184,35 @@ begin/end マーカー行（完全一致）の間を丸ごと置換し、begin �
 どの言語にもそのまま移植できます。
 
 変更内容はターゲットと同じディレクトリの排他的な一時ファイルへ全量を書き、
-flush 後に1回の原子的置換で確定します。Windows は `ReplaceFileW` で ACL と
-ファイル属性を、POSIX は owner/group・権限ビット・上限付き拡張属性を維持
-します。シンボリックリンク、Windows reparse point、通常ファイル以外、
-複数ハードリンクを持つターゲットは、その意味を暗黙に変えないよう読込み前に
-拒否します。
+flush 後に1回の原子的置換で確定します。一時ファイルは、内容を書き込む前から
+POSIX では mode `0600`、Windows では SYSTEM と Owner Rights だけに full
+access を与える protected DACL で作成し、確定直前に identity・全バイト・
+metadata・Windows DACL を再検証します。既存 POSIX ターゲットは
+owner/group・権限ビット・上限付き拡張属性を維持します。既存 Windows
+ターゲットは `ReplaceFileW` が文書化している DACL・ファイル属性・named
+stream の引継ぎだけを利用します。未作成ターゲットは一時ファイルの非公開
+権限を維持したまま作成されます。
+
+ターゲットと正本ブロックの両方を、リンクをたどらない通常ファイルの
+snapshot として読みます。シンボリックリンク、Windows reparse point、
+EFS 暗号化済み Windows ターゲット、通常ファイル以外、複数ハードリンクを
+持つファイルは、その意味の変更・blocking read・平文一時ファイルへの露出を
+避けるため、内容の読込み前に拒否します。
 確定直前にターゲットの identity・metadata・全バイトを再確認します。この
 再確認より前に完了した変更は検出できますが、再確認と置換は別操作です。
 既存ターゲットの lost update を防ぐ必要がある場合は、すべての writer を
 外部 lock または単一 runner で直列化してください。未作成ターゲットは
 no-replace で確定するため、並行する新規作成を上書きしません。Windows の
 曖昧な部分失敗では `AtomicCommitError` と回復用 artifact を残します。
+`AtomicCommitError.committed` は `True`・`False`・判定不能の `None` の
+3状態です。cleanup は unlink 直前に identity を照合しますが、portable な
+path-based unlink は identity 条件付き操作ではないため、最後の name-swap
+window は残ります。予測困難な private name と、曖昧時に artifact を消さない
+fail-closed 動作で緩和します。
+
+既存 Windows ターゲットの owner は effective token の default owner と一致
+している必要があります。owner/group/SACL の厳密な維持は保証しないため、
+それらが必須の文書にはこの参照実装を使わないでください。
 
 ```bash
 python scripts/merge_section.py TARGET.md SECTION.md            # その場でマージ

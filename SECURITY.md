@@ -23,19 +23,30 @@ Use GitHub private vulnerability reporting for:
 - A write-path issue that can truncate the original before commit, leave
   attacker-controlled temporary files, widen existing permissions, or follow
   a linked target unexpectedly. The reference implementation uses an
-  exclusive same-directory temporary file and flushes it before final commit,
-  uses Windows
+  exclusive same-directory temporary file and flushes it before final commit.
+  The temporary starts as POSIX mode `0600` or a protected Windows
+  SYSTEM/Owner-Rights-only DACL, and its identity, bytes, metadata, and Windows
+  DACL are rechecked before installation. The implementation uses Windows
   [`ReplaceFileW`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew)
-  with a private recovery backup to preserve ACLs/attributes, preserves bounded
-  POSIX owner/group/mode/extended attributes, and refuses symbolic-link,
-  Windows reparse-point, non-regular, or multi-hard-link targets before
-  reading. Recoverable Windows failures restore the verified original;
+  with a private recovery backup for its documented DACL, file-attribute, and
+  named-stream behavior, preserves bounded POSIX
+  owner/group/mode/extended attributes, and reads both target and block through
+  no-follow ordinary-file snapshots. Symbolic-link, Windows reparse-point,
+  EFS-encrypted Windows target, non-regular, and multi-hard-link inputs are
+  refused before content is read. Recoverable Windows failures restore the
+  verified original;
   ambiguous partial states retain named recovery artifacts and raise
-  `AtomicCommitError` instead of deleting evidence.
+  `AtomicCommitError` instead of deleting evidence. Its `committed` field is
+  tri-state (`True`, `False`, or `None` for unresolved).
   Identity, metadata, and bytes are rechecked before commit, but this is a
   best-effort check rather than compare-and-swap. Serialize all writers
   externally when lost-update prevention for an existing target is required.
   Missing-target creation uses a no-replace commit.
+  Existing Windows targets must be owned by the effective token's default
+  owner; exact owner/group/SACL preservation is not promised. Recovery cleanup
+  rechecks identity immediately before path-based unlink, but a portable
+  conditional-unlink primitive is unavailable, so a final name-swap race
+  remains and private unpredictable names are part of the mitigation.
 - A validation gap that allows unsafe public examples.
 
 Do not open a public issue containing tokens, credentials, private keys,

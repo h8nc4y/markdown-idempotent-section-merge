@@ -9,16 +9,21 @@ The format loosely follows Keep a Changelog conventions.
 ### Changed
 
 - Write merged Markdown through an exclusive same-directory temporary file,
-  flush it, and commit with one atomic path replacement. Preserve Windows
-  ACLs/file attributes and bounded POSIX owner/group/mode/extended attributes;
-  refuse symbolic-link, Windows reparse-point, non-regular, or multi-hard-link
-  targets before reading rather than silently changing their semantics. Windows
-  existing-target commits now use a private `ReplaceFileW` recovery backup,
-  reconcile documented partial-failure states, and retain ambiguous artifacts
-  with structured commit/recovery status.
-  Recheck target identity, metadata, and bytes immediately before commit while
-  documenting that this is best-effort rather than compare-and-swap; missing
-  targets still use a no-replace commit.
+  flush it, and commit with one atomic path replacement. Start private
+  temporaries at POSIX mode `0600` or a protected Windows
+  SYSTEM/Owner-Rights-only DACL, then recheck identity, bytes, metadata, and the
+  Windows DACL before commit. Preserve bounded POSIX
+  owner/group/mode/extended attributes; use only the documented Windows
+  `ReplaceFileW` DACL/file-attribute/named-stream behavior and reject
+  EFS-encrypted or differently owned Windows targets. Read target and block
+  through no-follow snapshots and refuse symbolic-link, Windows reparse-point,
+  non-regular, or multi-hard-link inputs before content is read.
+  Existing-target Windows commits now use a private recovery backup, reconcile
+  documented and interruption partial states, and retain ambiguous artifacts
+  with tri-state commit/recovery status. POSIX missing-target creation uses an
+  atomic no-replace link, reports committed cleanup partials, and retains the
+  extra artifact. Rechecks remain best-effort rather than compare-and-swap, and
+  identity-before-unlink cleanup retains a documented final path-name race.
 - Make the private-marker scanner hermetic and bounded across Windows and
   POSIX. It now isolates every Git child from ambient `GIT_*` state, hooks,
   filters, attributes, templates, traces, replace objects, lazy fetching,

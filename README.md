@@ -158,11 +158,20 @@ python scripts/merge_section.py TARGET.md SECTION.md --check   # drift check (ex
 `## Heading`. LF/CRLF style and a UTF-8 BOM are preserved byte-for-byte.
 Changed content is flushed to an exclusive temporary file beside the target
 and committed with one atomic path replacement, so readers never observe a
-partially written document. Windows uses `ReplaceFileW` with a private recovery
-backup to retain ACLs and file attributes; POSIX retains owner/group, permission
-bits, and a bounded set of extended attributes. Symbolic-link, non-regular, and
-multi-hard-link targets are refused because replacing them would silently
-change their semantics; Windows reparse points are refused before reading.
+partially written document. Before content is written, a new temporary starts
+as mode `0600` on POSIX or with a protected SYSTEM/Owner-Rights-only DACL on
+Windows; its identity, bytes, metadata, and Windows DACL are verified again
+before commit. An existing POSIX target retains owner/group, permission bits,
+and a bounded set of extended attributes. For an existing Windows target,
+`ReplaceFileW` carries forward the documented DACL, file attributes, and named
+streams through a private recovery backup. A missing target keeps the private
+temporary's permissions after installation.
+
+Both `TARGET.md` and `SECTION.md` are read as no-follow snapshots of ordinary
+single-link files. Symbolic links, Windows reparse points, EFS-encrypted Windows
+targets, non-regular files, and multi-hard-link files are refused because
+reading or replacing them would silently change their semantics or expose a
+plaintext temporary.
 
 The target's identity, metadata, and bytes are rechecked immediately before
 commit. This detects changes completed before that check, but the check and
@@ -241,13 +250,19 @@ repository paths you cannot publish, or customer data in public issues.
 - When only mixed line endings are normalized, the tool reports
   `normalized` / `would-normalize` — it never claims "unchanged" while
   rewriting bytes.
-- Recoverable Windows replacement failures restore or retain the verified
-  original and remove only artifacts still owned by this invocation. If the
-  filesystem state is ambiguous, `AtomicCommitError` reports whether a commit
-  happened and retains named backup/temporary artifacts for manual recovery.
+- Recoverable replacement failures restore or retain the verified original.
+  `AtomicCommitError.committed` is `True`, `False`, or `None` when the observed
+  state cannot prove either outcome; named backup/temporary artifacts are
+  retained for manual recovery when cleanup or state is uncertain. POSIX
+  missing-target creation likewise reports `committed=True` and retains its
+  extra hard-link name if post-link cleanup fails.
   The recovery behavior follows the documented
   [`ReplaceFileW`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew)
   failure states.
+- Recovery cleanup compares file identity immediately before unlinking.
+  Because portable path-based unlink is not conditional on that identity, a
+  final name-swap race remains; unpredictable private names reduce exposure,
+  and ambiguous artifacts are retained instead of guessed away.
 - Changes visible before the final recheck stop the merge. The recheck is
   best-effort, not compare-and-swap; externally serialize writers when an
   existing target must never suffer a lost update. Concurrent creation of a
@@ -271,6 +286,12 @@ repository paths you cannot publish, or customer data in public issues.
 - The reference implementation accepts a missing target or an existing
   ordinary file with one hard link. Symbolic links and multi-hard-link files
   are refused; choose the intended ordinary file path explicitly.
+- Existing Windows targets must be owned by the effective token's default
+  owner. `ReplaceFileW` is relied on only for its documented DACL, attribute,
+  and named-stream behavior: exact owner, group, or SACL preservation is not
+  promised. Do not use this reference implementation when those fields must be
+  preserved exactly. EFS-encrypted targets are refused before creating a
+  plaintext temporary.
 
 ## Non-Goals
 

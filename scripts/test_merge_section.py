@@ -21,6 +21,7 @@ Windows recovery cases model the documented ``ReplaceFileW`` partial states
 and verify that ambiguous artifacts are retained instead of guessed away.
 """
 
+import io
 import os
 import stat
 import subprocess
@@ -276,6 +277,136 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
         temporary.write_bytes(replacement)
         return target, temporary, target.lstat(), original, replacement
 
+    def _missing_commit(self):
+        target = self.dir / "target.md"
+        replacement = b"# Doc\n\nnew.\n"
+        if os.name == "nt":
+            descriptor, temporary = merge_section._open_atomic_temporary(
+                target
+            )
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(replacement)
+                stream.flush()
+                os.fsync(stream.fileno())
+                temporary_stat = os.fstat(stream.fileno())
+        else:
+            temporary = self.dir / ".target.md.pending"
+            temporary.write_bytes(replacement)
+            temporary_stat = temporary.lstat()
+        return target, temporary, temporary_stat, replacement
+
+    def test_uninspectable_artifact_does_not_mask_structured_state(self):
+        candidate = self.dir / ".target.md.recovery-backup"
+
+        for failure in (
+            PermissionError("synthetic ACL denial"),
+            KeyboardInterrupt("synthetic inspection interrupt"),
+        ):
+            with self.subTest(failure=type(failure).__name__):
+                with mock.patch.object(
+                    Path,
+                    "lstat",
+                    side_effect=failure,
+                ):
+                    error = merge_section._windows_commit_state_error(
+                        "synthetic partial commit",
+                        committed=None,
+                        recovered=False,
+                        paths=(candidate,),
+                    )
+
+                self.assertIsNone(error.committed)
+                self.assertFalse(error.recovered)
+                self.assertEqual(error.artifacts, (candidate,))
+                self.assertIn(ascii(os.fspath(candidate)), str(error))
+
+    def test_windows_no_replace_interrupt_after_commit_is_reconciled(self):
+        target, temporary, temporary_stat, replacement = (
+            self._missing_commit()
+        )
+
+        def move_then_interrupt(source, destination):
+            source.replace(destination)
+            raise KeyboardInterrupt("synthetic post-move interrupt")
+
+        with mock.patch.object(
+            merge_section,
+            "_move_file_windows_no_replace_raw",
+            side_effect=move_then_interrupt,
+        ):
+            with self.assertRaises(merge_section.AtomicCommitError) as caught:
+                merge_section._move_new_windows_file(
+                    target,
+                    temporary,
+                    temporary_stat,
+                    replacement,
+                )
+
+        self.assertTrue(caught.exception.committed)
+        self.assertFalse(caught.exception.recovered)
+        self.assertEqual(target.read_bytes(), replacement)
+        self.assertFalse(temporary.exists())
+
+    def test_windows_no_replace_precommit_interrupt_cleans_temporary(self):
+        target, temporary, temporary_stat, replacement = (
+            self._missing_commit()
+        )
+
+        with mock.patch.object(
+            merge_section,
+            "_move_file_windows_no_replace_raw",
+            side_effect=KeyboardInterrupt("synthetic pre-move interrupt"),
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                merge_section._move_new_windows_file(
+                    target,
+                    temporary,
+                    temporary_stat,
+                    replacement,
+                )
+
+        self.assertFalse(target.exists())
+        self.assertFalse(temporary.exists())
+
+    def test_windows_precommit_verification_interrupt_is_structured(self):
+        target, temporary, temporary_stat, replacement = (
+            self._missing_commit()
+        )
+
+        with mock.patch.object(
+            merge_section,
+            "_verified_replacement_snapshot",
+            side_effect=KeyboardInterrupt("synthetic verification interrupt"),
+        ):
+            with self.assertRaises(merge_section.AtomicCommitError) as caught:
+                merge_section._move_new_windows_file(
+                    target,
+                    temporary,
+                    temporary_stat,
+                    replacement,
+                )
+
+        self.assertFalse(caught.exception.committed)
+        self.assertTrue(caught.exception.recovered)
+        self.assertEqual(caught.exception.artifacts, (temporary,))
+        self.assertTrue(temporary.exists())
+
+    def test_windows_backup_setup_interrupt_is_structured_and_cleaned(self):
+        target = self.dir / "target.md"
+
+        with mock.patch.object(
+            os,
+            "fsync",
+            side_effect=KeyboardInterrupt("synthetic backup fsync interrupt"),
+        ):
+            with self.assertRaises(merge_section.AtomicCommitError) as caught:
+                merge_section._open_windows_backup_placeholder(target)
+
+        self.assertFalse(caught.exception.committed)
+        self.assertTrue(caught.exception.recovered)
+        self.assertEqual(caught.exception.artifacts, ())
+        self.assertEqual(self._files(), set())
+
     def test_windows_commit_success_removes_verified_backup(self):
         target, temporary, target_stat, original, replacement = (
             self._existing_commit()
@@ -314,8 +445,16 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
         )
         original_open = merge_section._open_regular_read_descriptor
 
-        def open_then_replace_with_fifo(path, missing_ok=False):
-            descriptor = original_open(path, missing_ok=missing_ok)
+        def open_then_replace_with_fifo(
+            path,
+            missing_ok=False,
+            reject_encrypted=True,
+        ):
+            descriptor = original_open(
+                path,
+                missing_ok=missing_ok,
+                reject_encrypted=reject_encrypted,
+            )
             if path == temporary:
                 temporary.unlink()
                 os.mkfifo(temporary)
@@ -505,7 +644,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                     original,
                 )
 
-        self.assertFalse(caught.exception.committed)
+        self.assertIsNone(caught.exception.committed)
         self.assertFalse(caught.exception.recovered)
         self.assertEqual(
             set(caught.exception.artifacts),
@@ -514,6 +653,74 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
         self.assertEqual(target.read_bytes(), b"# External\n")
         self.assertEqual(temporary.read_bytes(), replacement)
         self.assertTrue(captured["backup"].exists())
+
+    def test_windows_error_reports_verified_replacement_as_committed(self):
+        target, temporary, target_stat, original, replacement = (
+            self._existing_commit()
+        )
+        captured = {}
+
+        def replace_then_report_error(target_path, temporary_path, backup_path):
+            captured["backup"] = backup_path
+            target_path.replace(backup_path)
+            temporary_path.replace(target_path)
+            return 4321
+
+        with mock.patch.object(
+            merge_section,
+            "_replace_file_windows_raw",
+            side_effect=replace_then_report_error,
+        ):
+            with self.assertRaises(merge_section.AtomicCommitError) as caught:
+                merge_section._commit_existing_windows(
+                    target,
+                    temporary,
+                    target_stat,
+                    original,
+                )
+
+        self.assertTrue(caught.exception.committed)
+        self.assertFalse(caught.exception.recovered)
+        self.assertEqual(caught.exception.artifacts, (captured["backup"],))
+        self.assertEqual(target.read_bytes(), replacement)
+        self.assertEqual(captured["backup"].read_bytes(), original)
+
+    def test_windows_error_reports_unresolved_state_as_unknown(self):
+        target, temporary, target_stat, original, replacement = (
+            self._existing_commit()
+        )
+        captured = {}
+
+        def remove_target_then_report_error(
+            target_path,
+            _temporary_path,
+            backup_path,
+        ):
+            captured["backup"] = backup_path
+            target_path.unlink()
+            return 4321
+
+        with mock.patch.object(
+            merge_section,
+            "_replace_file_windows_raw",
+            side_effect=remove_target_then_report_error,
+        ):
+            with self.assertRaises(merge_section.AtomicCommitError) as caught:
+                merge_section._commit_existing_windows(
+                    target,
+                    temporary,
+                    target_stat,
+                    original,
+                )
+
+        self.assertIsNone(caught.exception.committed)
+        self.assertFalse(caught.exception.recovered)
+        self.assertEqual(
+            set(caught.exception.artifacts),
+            {captured["backup"], temporary},
+        )
+        self.assertFalse(target.exists())
+        self.assertEqual(temporary.read_bytes(), replacement)
 
     def test_windows_error_1177_restores_without_replacement(self):
         target, temporary, target_stat, original, _replacement = (
@@ -559,6 +766,48 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
         self.assertFalse(captured["backup"].exists())
         self.assertEqual(self._files(), {"target.md"})
 
+    def test_windows_error_1177_restore_interrupt_is_reconciled(self):
+        target, temporary, target_stat, original, _replacement = (
+            self._existing_commit()
+        )
+        captured = {}
+
+        def replace_partial(target_path, _temporary_path, backup_path):
+            captured["backup"] = backup_path
+            target_path.replace(backup_path)
+            return 1177
+
+        def restore_then_interrupt(source, destination):
+            source.replace(destination)
+            raise KeyboardInterrupt("synthetic post-restore interrupt")
+
+        with (
+            mock.patch.object(
+                merge_section,
+                "_replace_file_windows_raw",
+                side_effect=replace_partial,
+            ),
+            mock.patch.object(
+                merge_section,
+                "_move_file_windows_no_replace_raw",
+                side_effect=restore_then_interrupt,
+            ),
+        ):
+            with self.assertRaises(merge_section.AtomicCommitError) as caught:
+                merge_section._commit_existing_windows(
+                    target,
+                    temporary,
+                    target_stat,
+                    original,
+                )
+
+        self.assertFalse(caught.exception.committed)
+        self.assertTrue(caught.exception.recovered)
+        self.assertEqual(caught.exception.artifacts, ())
+        self.assertEqual(target.read_bytes(), original)
+        self.assertFalse(temporary.exists())
+        self.assertFalse(captured["backup"].exists())
+
     def test_windows_error_1177_does_not_overwrite_new_target(self):
         target, temporary, target_stat, original, replacement = (
             self._existing_commit()
@@ -597,6 +846,54 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
         self.assertEqual(target.read_bytes(), b"# External\n")
         self.assertEqual(captured["backup"].read_bytes(), original)
         self.assertEqual(temporary.read_bytes(), replacement)
+
+    def test_windows_error_1177_target_inspection_failure_is_structured(self):
+        target, temporary, target_stat, original, _replacement = (
+            self._existing_commit()
+        )
+        captured = {}
+        armed = {"value": False}
+        original_inspect = merge_section._inspect_target
+
+        def replace_partial(target_path, _temporary_path, backup_path):
+            captured["backup"] = backup_path
+            target_path.replace(backup_path)
+            armed["value"] = True
+            return 1177
+
+        def inspect_with_denial(path, *args, **kwargs):
+            if armed["value"] and path == target:
+                raise PermissionError("synthetic target inspection denial")
+            return original_inspect(path, *args, **kwargs)
+
+        with (
+            mock.patch.object(
+                merge_section,
+                "_replace_file_windows_raw",
+                side_effect=replace_partial,
+            ),
+            mock.patch.object(
+                merge_section,
+                "_inspect_target",
+                side_effect=inspect_with_denial,
+            ),
+        ):
+            with self.assertRaises(merge_section.AtomicCommitError) as caught:
+                merge_section._commit_existing_windows(
+                    target,
+                    temporary,
+                    target_stat,
+                    original,
+                )
+
+        self.assertIsNone(caught.exception.committed)
+        self.assertFalse(caught.exception.recovered)
+        self.assertEqual(
+            set(caught.exception.artifacts),
+            {captured["backup"], temporary},
+        )
+        self.assertFalse(target.exists())
+        self.assertEqual(captured["backup"].read_bytes(), original)
 
     def test_windows_error_1177_retains_temp_when_recovery_cleanup_fails(self):
         target, temporary, target_stat, original, replacement = (
@@ -662,6 +959,8 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
             temporary,
             _target_stat,
             _original_bytes,
+            _replacement_stat,
+            _replacement_bytes,
         ):
             captured["temporary"] = temporary
             raise merge_section.AtomicCommitError(
@@ -702,6 +1001,733 @@ class FileLevelTests(unittest.TestCase):
         path.write_bytes(data)
         return path
 
+    @unittest.skipUnless(os.name == "nt", "Windows DACLs are Windows-only")
+    def _assert_windows_owner_only_dacl(self, path):
+        import ctypes
+        from ctypes import wintypes
+
+        class AclSizeInformation(ctypes.Structure):
+            _fields_ = (
+                ("AceCount", wintypes.DWORD),
+                ("AclBytesInUse", wintypes.DWORD),
+                ("AclBytesFree", wintypes.DWORD),
+            )
+
+        class AceHeader(ctypes.Structure):
+            _fields_ = (
+                ("AceType", wintypes.BYTE),
+                ("AceFlags", wintypes.BYTE),
+                ("AceSize", wintypes.WORD),
+            )
+
+        class AccessAllowedAce(ctypes.Structure):
+            _fields_ = (
+                ("Header", AceHeader),
+                ("Mask", wintypes.DWORD),
+                ("SidStart", wintypes.DWORD),
+            )
+
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        get_security = advapi32.GetNamedSecurityInfoW
+        get_security.argtypes = (
+            wintypes.LPWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.LPVOID),
+            ctypes.POINTER(wintypes.LPVOID),
+            ctypes.POINTER(wintypes.LPVOID),
+            ctypes.POINTER(wintypes.LPVOID),
+            ctypes.POINTER(wintypes.LPVOID),
+        )
+        get_security.restype = wintypes.DWORD
+        get_control = advapi32.GetSecurityDescriptorControl
+        get_control.argtypes = (
+            wintypes.LPVOID,
+            ctypes.POINTER(wintypes.WORD),
+            ctypes.POINTER(wintypes.DWORD),
+        )
+        get_control.restype = wintypes.BOOL
+        get_acl_information = advapi32.GetAclInformation
+        get_acl_information.argtypes = (
+            wintypes.LPVOID,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+        )
+        get_acl_information.restype = wintypes.BOOL
+        get_ace = advapi32.GetAce
+        get_ace.argtypes = (
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.LPVOID),
+        )
+        get_ace.restype = wintypes.BOOL
+        convert_sid = advapi32.ConvertStringSidToSidW
+        convert_sid.argtypes = (
+            wintypes.LPCWSTR,
+            ctypes.POINTER(wintypes.LPVOID),
+        )
+        convert_sid.restype = wintypes.BOOL
+        equal_sid = advapi32.EqualSid
+        equal_sid.argtypes = (wintypes.LPVOID, wintypes.LPVOID)
+        equal_sid.restype = wintypes.BOOL
+        local_free = ctypes.WinDLL(
+            "kernel32",
+            use_last_error=True,
+        ).LocalFree
+        local_free.argtypes = (wintypes.HLOCAL,)
+        local_free.restype = wintypes.HLOCAL
+
+        dacl = wintypes.LPVOID()
+        descriptor = wintypes.LPVOID()
+        dacl_security_information = 0x00000004
+        se_file_object = 1
+        error_code = get_security(
+            str(path),
+            se_file_object,
+            dacl_security_information,
+            None,
+            None,
+            ctypes.byref(dacl),
+            None,
+            ctypes.byref(descriptor),
+        )
+        self.assertEqual(error_code, 0)
+        try:
+            control = wintypes.WORD()
+            revision = wintypes.DWORD()
+            self.assertTrue(
+                get_control(
+                    descriptor,
+                    ctypes.byref(control),
+                    ctypes.byref(revision),
+                )
+            )
+            se_dacl_protected = 0x1000
+            self.assertTrue(control.value & se_dacl_protected)
+
+            information = AclSizeInformation()
+            acl_size_information = 2
+            self.assertTrue(
+                get_acl_information(
+                    dacl,
+                    ctypes.byref(information),
+                    ctypes.sizeof(information),
+                    acl_size_information,
+                )
+            )
+            self.assertEqual(information.AceCount, 2)
+
+            expected_sids = []
+            try:
+                for text in ("S-1-5-18", "S-1-3-4"):
+                    sid = wintypes.LPVOID()
+                    self.assertTrue(convert_sid(text, ctypes.byref(sid)))
+                    expected_sids.append(sid)
+
+                matched = [False, False]
+                file_all_access = 0x001F01FF
+                access_allowed_ace_type = 0
+                for index in range(information.AceCount):
+                    ace_pointer = wintypes.LPVOID()
+                    self.assertTrue(
+                        get_ace(dacl, index, ctypes.byref(ace_pointer))
+                    )
+                    ace = ctypes.cast(
+                        ace_pointer,
+                        ctypes.POINTER(AccessAllowedAce),
+                    ).contents
+                    self.assertEqual(
+                        ace.Header.AceType,
+                        access_allowed_ace_type,
+                    )
+                    self.assertEqual(ace.Header.AceFlags, 0)
+                    self.assertEqual(ace.Mask, file_all_access)
+                    sid_pointer = ctypes.c_void_p(
+                        ace_pointer.value
+                        + AccessAllowedAce.SidStart.offset
+                    )
+                    sid_matches = [
+                        bool(equal_sid(sid_pointer, expected))
+                        for expected in expected_sids
+                    ]
+                    self.assertEqual(sum(sid_matches), 1)
+                    matched[sid_matches.index(True)] = True
+                self.assertEqual(matched, [True, True])
+            finally:
+                for sid in expected_sids:
+                    local_free(sid)
+        finally:
+            local_free(descriptor)
+
+    @unittest.skipUnless(os.name == "nt", "Windows DACLs are Windows-only")
+    def _add_windows_everyone_read_ace(self, path):
+        """Broaden a fixture DACL so the final private-temp check must fail."""
+
+        import ctypes
+        from ctypes import wintypes
+
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        convert_descriptor = (
+            advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW
+        )
+        convert_descriptor.argtypes = (
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.LPVOID),
+            ctypes.POINTER(wintypes.DWORD),
+        )
+        convert_descriptor.restype = wintypes.BOOL
+        set_file_security = advapi32.SetFileSecurityW
+        set_file_security.argtypes = (
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+        )
+        set_file_security.restype = wintypes.BOOL
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        local_free = kernel32.LocalFree
+        local_free.argtypes = (wintypes.HLOCAL,)
+        local_free.restype = wintypes.HLOCAL
+
+        descriptor = wintypes.LPVOID()
+        self.assertTrue(
+            convert_descriptor(
+                "D:P(A;;FA;;;SY)(A;;FA;;;OW)(A;;GR;;;WD)",
+                1,
+                ctypes.byref(descriptor),
+                None,
+            )
+        )
+        try:
+            dacl_security_information = 0x00000004
+            self.assertTrue(
+                set_file_security(
+                    str(path),
+                    dacl_security_information,
+                    descriptor,
+                )
+            )
+        finally:
+            local_free(descriptor)
+
+    @unittest.skipUnless(os.name == "nt", "Windows DACLs are Windows-only")
+    def _windows_dacl_sddl(self, path):
+        """Return the canonical DACL text for before/after comparison."""
+
+        import ctypes
+        from ctypes import wintypes
+
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        get_security = advapi32.GetNamedSecurityInfoW
+        get_security.argtypes = (
+            wintypes.LPWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.LPVOID),
+            ctypes.POINTER(wintypes.LPVOID),
+            ctypes.POINTER(wintypes.LPVOID),
+            ctypes.POINTER(wintypes.LPVOID),
+            ctypes.POINTER(wintypes.LPVOID),
+        )
+        get_security.restype = wintypes.DWORD
+        to_string = (
+            advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW
+        )
+        to_string.argtypes = (
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.LPWSTR),
+            ctypes.POINTER(wintypes.DWORD),
+        )
+        to_string.restype = wintypes.BOOL
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        local_free = kernel32.LocalFree
+        local_free.argtypes = (wintypes.HLOCAL,)
+        local_free.restype = wintypes.HLOCAL
+
+        descriptor = wintypes.LPVOID()
+        dacl_security_information = 0x00000004
+        se_file_object = 1
+        error_code = get_security(
+            str(path),
+            se_file_object,
+            dacl_security_information,
+            None,
+            None,
+            None,
+            None,
+            ctypes.byref(descriptor),
+        )
+        self.assertEqual(error_code, 0)
+        text = wintypes.LPWSTR()
+        try:
+            self.assertTrue(
+                to_string(
+                    descriptor,
+                    1,
+                    dacl_security_information,
+                    ctypes.byref(text),
+                    None,
+                )
+            )
+            return text.value
+        finally:
+            if text:
+                local_free(text)
+            local_free(descriptor)
+
+    def test_atomic_temporary_starts_owner_only(self):
+        target = self.dir / "target.md"
+        descriptor, temporary = merge_section._open_atomic_temporary(target)
+        descriptor_open = True
+        try:
+            if os.name == "nt":
+                self._assert_windows_owner_only_dacl(temporary)
+            else:
+                self.assertEqual(
+                    stat.S_IMODE(os.fstat(descriptor).st_mode),
+                    0o600,
+                )
+            os.close(descriptor)
+            descriptor_open = False
+            with temporary.open("ab") as reopened:
+                reopened.write(b"owner-can-reopen")
+        finally:
+            if descriptor_open:
+                os.close(descriptor)
+            temporary.unlink()
+
+    @unittest.skipIf(os.name == "nt", "POSIX umask is POSIX-only")
+    def test_posix_private_mode_is_exact_under_restrictive_umask(self):
+        target = self.dir / "target.md"
+        previous_umask = os.umask(0o777)
+        descriptor = None
+        temporary = None
+        try:
+            descriptor, temporary = merge_section._open_atomic_temporary(
+                target
+            )
+        finally:
+            os.umask(previous_umask)
+        try:
+            self.assertEqual(
+                stat.S_IMODE(os.fstat(descriptor).st_mode),
+                0o600,
+            )
+        finally:
+            os.close(descriptor)
+            temporary.unlink()
+
+    @unittest.skipIf(os.name == "nt", "POSIX fchmod is POSIX-only")
+    def test_posix_private_mode_interrupt_reports_artifact(self):
+        target = self.dir / "target.md"
+
+        with mock.patch.object(
+            os,
+            "fchmod",
+            side_effect=KeyboardInterrupt("synthetic fchmod interrupt"),
+        ):
+            with self.assertRaises(merge_section.AtomicCommitError) as caught:
+                merge_section._open_atomic_temporary(target)
+
+        self.assertFalse(caught.exception.committed)
+        self.assertTrue(caught.exception.recovered)
+        self.assertEqual(len(caught.exception.artifacts), 1)
+        temporary = caught.exception.artifacts[0]
+        self.assertTrue(temporary.exists())
+        temporary.unlink()
+
+    def test_initial_temporary_identity_failure_reports_artifact(self):
+        target = self.dir / "target.md"
+        replacement = b"## Notes\n\nnew.\n"
+
+        for failure in (
+            OSError("synthetic fstat failure"),
+            KeyboardInterrupt("synthetic fstat interrupt"),
+        ):
+            with self.subTest(failure=type(failure).__name__):
+                with mock.patch.object(
+                    os,
+                    "fstat",
+                    side_effect=failure,
+                ):
+                    with self.assertRaises(
+                        merge_section.AtomicCommitError
+                    ) as caught:
+                        merge_section._atomic_write(
+                            target,
+                            replacement,
+                            None,
+                            b"",
+                        )
+
+                self.assertFalse(caught.exception.committed)
+                self.assertTrue(caught.exception.recovered)
+                self.assertEqual(len(caught.exception.artifacts), 1)
+                temporary = caught.exception.artifacts[0]
+                self.assertTrue(temporary.exists())
+                self.assertEqual(temporary.read_bytes(), b"")
+                if os.name == "nt":
+                    self._assert_windows_owner_only_dacl(temporary)
+                else:
+                    self.assertEqual(
+                        stat.S_IMODE(temporary.lstat().st_mode),
+                        0o600,
+                    )
+                temporary.unlink()
+
+    def test_outer_close_failure_does_not_mask_identity_error(self):
+        target = self.dir / "target.md"
+        replacement = b"## Notes\n\nnew.\n"
+        original_close = os.close
+
+        def close_then_interrupt(descriptor):
+            original_close(descriptor)
+            raise KeyboardInterrupt("cleanup close interrupt")
+
+        with (
+            mock.patch.object(
+                os,
+                "fstat",
+                side_effect=OSError("primary identity failure"),
+            ),
+            mock.patch.object(
+                os,
+                "close",
+                side_effect=close_then_interrupt,
+            ),
+        ):
+            with self.assertRaises(merge_section.AtomicCommitError) as caught:
+                merge_section._atomic_write(
+                    target,
+                    replacement,
+                    None,
+                    b"",
+                )
+
+        self.assertFalse(caught.exception.committed)
+        self.assertTrue(caught.exception.recovered)
+        self.assertIsInstance(
+            caught.exception.__cause__,
+            merge_section.AtomicCommitError,
+        )
+        self.assertIn(
+            "identity could not be recorded",
+            str(caught.exception.__cause__),
+        )
+        self.assertEqual(len(caught.exception.artifacts), 1)
+        temporary = caught.exception.artifacts[0]
+        self.assertTrue(temporary.exists())
+        temporary.unlink()
+
+    def test_outer_unlink_failure_does_not_mask_primary_error(self):
+        target = self._write("target.md", b"# Doc\n\n## Notes\n\nold.\n")
+        replacement = b"# Doc\n\n## Notes\n\nnew.\n"
+        target_stat, original = merge_section._read_regular_file_snapshot(
+            target
+        )
+        original_open = merge_section._open_atomic_temporary
+        captured = {}
+
+        def capture_open(target_path):
+            descriptor, temporary = original_open(target_path)
+            captured["temporary"] = temporary
+            return descriptor, temporary
+
+        with (
+            mock.patch.object(
+                merge_section,
+                "_open_atomic_temporary",
+                side_effect=capture_open,
+            ),
+            mock.patch.object(
+                merge_section,
+                "_assert_target_unchanged",
+                side_effect=merge_section.MergeError(
+                    "primary precommit failure"
+                ),
+            ),
+            mock.patch.object(
+                merge_section,
+                "_unlink_owned_path",
+                side_effect=OSError("cleanup unlink failure"),
+            ),
+        ):
+            with self.assertRaises(merge_section.AtomicCommitError) as caught:
+                merge_section._atomic_write(
+                    target,
+                    replacement,
+                    target_stat,
+                    original,
+                )
+
+        self.assertFalse(caught.exception.committed)
+        self.assertTrue(caught.exception.recovered)
+        self.assertIsInstance(
+            caught.exception.__cause__,
+            merge_section.MergeError,
+        )
+        self.assertEqual(
+            str(caught.exception.__cause__),
+            "primary precommit failure",
+        )
+        self.assertEqual(
+            caught.exception.artifacts,
+            (captured["temporary"],),
+        )
+        self.assertTrue(captured["temporary"].exists())
+        captured["temporary"].unlink()
+
+    @unittest.skipUnless(os.name == "nt", "Windows descriptors are Windows-only")
+    def test_windows_descriptor_setup_failure_reports_private_artifact(self):
+        import msvcrt
+
+        target = self.dir / "target.md"
+        for failure in (
+            OSError("synthetic descriptor failure"),
+            KeyboardInterrupt("synthetic descriptor interrupt"),
+        ):
+            with self.subTest(failure=type(failure).__name__):
+                with mock.patch.object(
+                    msvcrt,
+                    "open_osfhandle",
+                    side_effect=failure,
+                ):
+                    with self.assertRaises(
+                        merge_section.AtomicCommitError
+                    ) as caught:
+                        merge_section._open_windows_atomic_temporary(target)
+
+                self.assertFalse(caught.exception.committed)
+                self.assertTrue(caught.exception.recovered)
+                self.assertEqual(len(caught.exception.artifacts), 1)
+                temporary = caught.exception.artifacts[0]
+                self.assertTrue(temporary.exists())
+                self._assert_windows_owner_only_dacl(temporary)
+                temporary.unlink()
+
+    def test_temporary_metadata_drift_is_rejected_before_commit(self):
+        target = self.dir / "target.md"
+        block = self._write("section.md", b"## Notes\n\nnew.\n")
+        original_commit = merge_section._commit_temporary
+        captured = {}
+
+        def mutate_then_commit(
+            target_path,
+            temporary,
+            target_stat,
+            original_bytes,
+            replacement_stat,
+            replacement_bytes,
+        ):
+            # Mutate policy metadata without touching inode identity or bytes.
+            # Windows DACLs are not represented in os.stat, so that path also
+            # exercises the explicit security-descriptor verification.
+            if os.name == "nt":
+                self._add_windows_everyone_read_ace(temporary)
+            else:
+                temporary.chmod(0o644)
+            captured["temporary"] = temporary
+            return original_commit(
+                target_path,
+                temporary,
+                target_stat,
+                original_bytes,
+                replacement_stat,
+                replacement_bytes,
+            )
+
+        with mock.patch.object(
+            merge_section,
+            "_commit_temporary",
+            side_effect=mutate_then_commit,
+        ):
+            with self.assertRaises(merge_section.AtomicCommitError) as caught:
+                merge_section.merge_file(target, block)
+
+        self.assertFalse(caught.exception.committed)
+        self.assertTrue(caught.exception.recovered)
+        self.assertFalse(target.exists())
+        self.assertTrue(captured["temporary"].exists())
+        captured["temporary"].unlink()
+
+    @unittest.skipUnless(
+        os.name == "nt",
+        "Windows file attributes are Windows-only",
+    )
+    def test_windows_temporary_attribute_drift_is_rejected_before_commit(self):
+        import ctypes
+        from ctypes import wintypes
+
+        target = self.dir / "target.md"
+        block = self._write("section.md", b"## Notes\n\nnew.\n")
+        original_commit = merge_section._commit_temporary
+        captured = {}
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        get_attributes = kernel32.GetFileAttributesW
+        get_attributes.argtypes = (wintypes.LPCWSTR,)
+        get_attributes.restype = wintypes.DWORD
+        set_attributes = kernel32.SetFileAttributesW
+        set_attributes.argtypes = (wintypes.LPCWSTR, wintypes.DWORD)
+        set_attributes.restype = wintypes.BOOL
+        invalid_attributes = 0xFFFFFFFF
+        hidden = 0x00000002
+
+        def mutate_then_commit(
+            target_path,
+            temporary,
+            target_stat,
+            original_bytes,
+            replacement_stat,
+            replacement_bytes,
+        ):
+            attributes = get_attributes(str(temporary))
+            self.assertNotEqual(attributes, invalid_attributes)
+            self.assertTrue(
+                set_attributes(str(temporary), attributes | hidden)
+            )
+            captured["temporary"] = temporary
+            return original_commit(
+                target_path,
+                temporary,
+                target_stat,
+                original_bytes,
+                replacement_stat,
+                replacement_bytes,
+            )
+
+        with mock.patch.object(
+            merge_section,
+            "_commit_temporary",
+            side_effect=mutate_then_commit,
+        ):
+            with self.assertRaises(merge_section.AtomicCommitError) as caught:
+                merge_section.merge_file(target, block)
+
+        self.assertFalse(caught.exception.committed)
+        self.assertTrue(caught.exception.recovered)
+        self.assertFalse(target.exists())
+        self.assertTrue(captured["temporary"].exists())
+        self.assertTrue(
+            get_attributes(str(captured["temporary"])) & hidden
+        )
+        captured["temporary"].unlink()
+
+    @unittest.skipUnless(os.name == "nt", "Windows DACLs are Windows-only")
+    def test_existing_windows_temporary_dacl_drift_is_rejected(self):
+        target = self._write("target.md", b"# Doc\n\n## Notes\n\nold.\n")
+        block = self._write("section.md", b"## Notes\n\nnew.\n")
+        original_commit = merge_section._commit_temporary
+        captured = {}
+
+        def mutate_then_commit(
+            target_path,
+            temporary,
+            target_stat,
+            original_bytes,
+            replacement_stat,
+            replacement_bytes,
+        ):
+            self._add_windows_everyone_read_ace(temporary)
+            captured["temporary"] = temporary
+            return original_commit(
+                target_path,
+                temporary,
+                target_stat,
+                original_bytes,
+                replacement_stat,
+                replacement_bytes,
+            )
+
+        with mock.patch.object(
+            merge_section,
+            "_commit_temporary",
+            side_effect=mutate_then_commit,
+        ):
+            with self.assertRaises(merge_section.AtomicCommitError) as caught:
+                merge_section.merge_file(target, block)
+
+        self.assertFalse(caught.exception.committed)
+        self.assertTrue(caught.exception.recovered)
+        self.assertEqual(target.read_bytes(), b"# Doc\n\n## Notes\n\nold.\n")
+        self.assertTrue(captured["temporary"].exists())
+        captured["temporary"].unlink()
+
+    @unittest.skipUnless(os.name == "nt", "Windows ownership is Windows-only")
+    def test_read_only_block_does_not_require_effective_token_owner(self):
+        target = self.dir / "missing.md"
+        block = self._write("section.md", b"## Notes\n\nnew.\n")
+
+        with mock.patch.object(
+            merge_section,
+            "_assert_windows_descriptor_owned_by_effective_owner",
+            side_effect=AssertionError("block owner check must stay disabled"),
+        ) as owner_check:
+            changed, action = merge_section.merge_file(
+                target,
+                block,
+                write=False,
+            )
+
+        self.assertTrue(changed)
+        self.assertEqual(action, "appended")
+        owner_check.assert_not_called()
+
+    def test_outer_cleanup_does_not_unlink_a_swapped_name(self):
+        target = self._write("target.md", b"# Doc\n\n## Notes\n\nold.\n")
+        block = self._write("section.md", b"## Notes\n\nnew.\n")
+        original_open = merge_section._open_atomic_temporary
+        captured = {}
+
+        def capture_open(target_path):
+            descriptor, temporary = original_open(target_path)
+            captured["temporary"] = temporary
+            return descriptor, temporary
+
+        def swap_then_fail(*_args):
+            owned_artifact = self.dir / "owned-artifact.md"
+            captured["temporary"].replace(owned_artifact)
+            captured["owned_artifact"] = owned_artifact
+            captured["temporary"].write_bytes(b"foreign object")
+            raise merge_section.MergeError("synthetic pre-commit failure")
+
+        with (
+            mock.patch.object(
+                merge_section,
+                "_open_atomic_temporary",
+                side_effect=capture_open,
+            ),
+            mock.patch.object(
+                merge_section,
+                "_assert_target_unchanged",
+                side_effect=swap_then_fail,
+            ),
+        ):
+            with self.assertRaises(
+                merge_section.AtomicCommitError
+            ) as caught:
+                merge_section.merge_file(target, block)
+
+        self.assertFalse(caught.exception.committed)
+        self.assertTrue(caught.exception.recovered)
+        self.assertIsInstance(
+            caught.exception.__cause__,
+            merge_section.MergeError,
+        )
+        self.assertEqual(
+            str(caught.exception.__cause__),
+            "synthetic pre-commit failure",
+        )
+        self.assertEqual(caught.exception.artifacts, ())
+        self.assertEqual(captured["temporary"].read_bytes(), b"foreign object")
+        self.assertIn(b"new.", captured["owned_artifact"].read_bytes())
+        self.assertEqual(target.read_bytes(), b"# Doc\n\n## Notes\n\nold.\n")
+
     def test_crlf_and_bom_are_preserved_and_stable(self):
         fixture = "replace-existing-section"
         bom = b"\xef\xbb\xbf"
@@ -737,6 +1763,69 @@ class FileLevelTests(unittest.TestCase):
         self.assertEqual(
             target.read_bytes().decode("utf-8"), load(fixture, "section.md")
         )
+        if os.name == "nt":
+            self._assert_windows_owner_only_dacl(target)
+        else:
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+
+    @unittest.skipIf(os.name == "nt", "POSIX hard-link commit is POSIX-only")
+    def test_missing_target_cleanup_failure_reports_committed_partial_state(self):
+        target = self.dir / "new.md"
+        block = self._write("section.md", b"## Notes\n\nnew.\n")
+
+        with mock.patch.object(
+            merge_section,
+            "_unlink_owned_path",
+            side_effect=OSError("synthetic persistent unlink failure"),
+        ):
+            with self.assertRaises(merge_section.AtomicCommitError) as caught:
+                merge_section.merge_file(target, block)
+
+        self.assertTrue(caught.exception.committed)
+        self.assertFalse(caught.exception.recovered)
+        self.assertEqual(len(caught.exception.artifacts), 1)
+        temporary = caught.exception.artifacts[0]
+        self.assertEqual(target.read_bytes(), b"## Notes\n\nnew.\n")
+        self.assertEqual(temporary.read_bytes(), target.read_bytes())
+        self.assertTrue(
+            merge_section._same_file_identity(
+                target.lstat(),
+                temporary.lstat(),
+            )
+        )
+        self.assertEqual(target.lstat().st_nlink, 2)
+
+        # テスト自身が意図的に残した hard link は、元 helper で回収して
+        # 後続ケースへ residue を持ち越さない。
+        merge_section._unlink_owned_path(temporary, temporary.lstat())
+
+    @unittest.skipIf(os.name == "nt", "POSIX hard-link commit is POSIX-only")
+    def test_missing_target_link_interrupt_reports_committed_state(self):
+        target = self.dir / "target.md"
+        block = self._write("section.md", b"## Notes\n\nnew.\n")
+        original_link = os.link
+
+        def link_then_interrupt(source, destination, **kwargs):
+            original_link(source, destination, **kwargs)
+            raise KeyboardInterrupt("synthetic post-link interrupt")
+
+        with mock.patch.object(
+            os,
+            "link",
+            side_effect=link_then_interrupt,
+        ):
+            with self.assertRaises(merge_section.AtomicCommitError) as caught:
+                merge_section.merge_file(target, block)
+
+        self.assertTrue(caught.exception.committed)
+        self.assertFalse(caught.exception.recovered)
+        self.assertEqual(caught.exception.artifacts, ())
+        self.assertIn(b"new.", target.read_bytes())
+        self.assertEqual(
+            sorted(path.name for path in self.dir.iterdir()),
+            ["section.md", "target.md"],
+        )
+        self.assertEqual(target.lstat().st_nlink, 1)
 
     def _run_cli(self, *args):
         return subprocess.run(
@@ -772,6 +1861,43 @@ class FileLevelTests(unittest.TestCase):
         result = self._run_cli(str(target), str(block))
         self.assertEqual(result.returncode, 2)
         self.assertIn("exactly one", result.stderr)
+
+    def test_cli_reports_tri_state_and_every_recovery_artifact(self):
+        target = self.dir / "target.md"
+        block = self._write("section.md", b"## Notes\n\nnew.\n")
+        artifacts = (
+            self.dir / ".target.md.private.tmp",
+            self.dir / ".target.md.recovery-backup",
+        )
+        failure = merge_section.AtomicCommitError(
+            "synthetic ambiguous commit",
+            committed=None,
+            recovered=False,
+            artifacts=artifacts,
+        )
+        stderr = io.StringIO()
+
+        with (
+            mock.patch.object(
+                merge_section,
+                "merge_file",
+                side_effect=failure,
+            ),
+            mock.patch.object(sys, "stderr", stderr),
+        ):
+            result = merge_section.main([str(target), str(block)])
+
+        self.assertEqual(result, 2)
+        output = stderr.getvalue()
+        self.assertIn(
+            "commit-state: committed=unknown recovered=false",
+            output,
+        )
+        for artifact in artifacts:
+            self.assertIn(
+                "recovery-artifact: %s" % ascii(os.fspath(artifact)),
+                output,
+            )
 
     def test_cr_only_line_endings_are_rejected(self):
         target = self._write("target.md", b"# T\r\r## Notes\rold.\r")
@@ -817,9 +1943,11 @@ class FileLevelTests(unittest.TestCase):
                 return_value=1176,
             )
         else:
+            # Patch the platform primitive, not the ownership-taking helper:
+            # the helper must observe the failure and remove its private name.
             failure = mock.patch.object(
-                merge_section,
-                "_commit_temporary",
+                os,
+                "replace",
                 side_effect=OSError("synthetic replace failure"),
             )
         with failure:
@@ -907,6 +2035,46 @@ class FileLevelTests(unittest.TestCase):
 
         self.assertEqual(stream.read_bytes(), b"preserved")
 
+    @unittest.skipUnless(os.name == "nt", "Windows metadata is Windows-only")
+    def test_atomic_replace_preserves_windows_dacl_and_hidden_attribute(self):
+        import ctypes
+        from ctypes import wintypes
+
+        target = self._write("target.md", b"# Doc\n\n## Notes\n\nold.\n")
+        block = self._write("section.md", b"## Notes\n\nnew.\n")
+        self._add_windows_everyone_read_ace(target)
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        get_attributes = kernel32.GetFileAttributesW
+        get_attributes.argtypes = (wintypes.LPCWSTR,)
+        get_attributes.restype = wintypes.DWORD
+        set_attributes = kernel32.SetFileAttributesW
+        set_attributes.argtypes = (wintypes.LPCWSTR, wintypes.DWORD)
+        set_attributes.restype = wintypes.BOOL
+        invalid_attributes = 0xFFFFFFFF
+        hidden = 0x00000002
+        before_attributes = get_attributes(str(target))
+        self.assertNotEqual(before_attributes, invalid_attributes)
+        self.assertTrue(
+            set_attributes(str(target), before_attributes | hidden)
+        )
+        expected_dacl = self._windows_dacl_sddl(target)
+
+        merge_section.merge_file(target, block)
+
+        actual_dacl = self._windows_dacl_sddl(target)
+        expected_aces = expected_dacl[expected_dacl.index("(") :]
+        actual_aces = actual_dacl[actual_dacl.index("(") :]
+        # ReplaceFileW may add the AI bookkeeping control flag while keeping
+        # the protected policy and every semantic ACE unchanged.
+        self.assertIn("P", expected_dacl[: expected_dacl.index("(")])
+        self.assertIn("P", actual_dacl[: actual_dacl.index("(")])
+        self.assertEqual(actual_aces, expected_aces)
+        after_attributes = get_attributes(str(target))
+        self.assertNotEqual(after_attributes, invalid_attributes)
+        self.assertTrue(after_attributes & hidden)
+        self.assertIn(b"new.", target.read_bytes())
+
     @unittest.skipIf(os.name == "nt", "POSIX extended attributes are unavailable")
     def test_atomic_replace_preserves_bounded_extended_attributes(self):
         if not all(
@@ -985,13 +2153,120 @@ class FileLevelTests(unittest.TestCase):
         )
 
     @unittest.skipIf(os.name == "nt", "POSIX FIFOs are not portable")
+    def test_fifo_block_is_rejected_before_read(self):
+        target = self._write("target.md", b"# Doc\n")
+        block = self.dir / "section.md"
+        os.mkfifo(block)
+
+        with self.assertRaisesRegex(merge_section.MergeError, "regular file"):
+            merge_section.merge_file(target, block)
+
+        self.assertEqual(target.read_bytes(), b"# Doc\n")
+        self.assertTrue(stat.S_ISFIFO(block.lstat().st_mode))
+
+    @unittest.skipIf(os.name == "nt", "POSIX FIFOs are not portable")
+    def test_fifo_temp_swap_is_rejected_before_missing_target_commit(self):
+        target = self.dir / "target.md"
+        block = self._write("section.md", b"## Notes\n\nnew.\n")
+        original_commit = merge_section._commit_temporary
+        captured = {}
+
+        def swap_then_commit(
+            target_path,
+            temporary,
+            target_stat,
+            original_bytes,
+            replacement_stat,
+            replacement_bytes,
+        ):
+            temporary.unlink()
+            os.mkfifo(temporary)
+            captured["temporary"] = temporary
+            return original_commit(
+                target_path,
+                temporary,
+                target_stat,
+                original_bytes,
+                replacement_stat,
+                replacement_bytes,
+            )
+
+        with mock.patch.object(
+            merge_section,
+            "_commit_temporary",
+            side_effect=swap_then_commit,
+        ):
+            with self.assertRaises(merge_section.AtomicCommitError) as caught:
+                merge_section.merge_file(target, block)
+
+        self.assertFalse(caught.exception.committed)
+        self.assertTrue(caught.exception.recovered)
+        self.assertFalse(target.exists())
+        self.assertTrue(
+            stat.S_ISFIFO(captured["temporary"].lstat().st_mode)
+        )
+
+    @unittest.skipIf(os.name == "nt", "POSIX FIFOs are not portable")
+    def test_fifo_temp_swap_is_rejected_before_existing_target_replace(self):
+        target = self._write("target.md", b"# Doc\n\n## Notes\n\nold.\n")
+        block = self._write("section.md", b"## Notes\n\nnew.\n")
+        original_commit = merge_section._commit_temporary
+        captured = {}
+
+        def swap_then_commit(
+            target_path,
+            temporary,
+            target_stat,
+            original_bytes,
+            replacement_stat,
+            replacement_bytes,
+        ):
+            temporary.unlink()
+            os.mkfifo(temporary)
+            captured["temporary"] = temporary
+            return original_commit(
+                target_path,
+                temporary,
+                target_stat,
+                original_bytes,
+                replacement_stat,
+                replacement_bytes,
+            )
+
+        with mock.patch.object(
+            merge_section,
+            "_commit_temporary",
+            side_effect=swap_then_commit,
+        ):
+            with self.assertRaises(merge_section.AtomicCommitError) as caught:
+                merge_section.merge_file(target, block)
+
+        self.assertFalse(caught.exception.committed)
+        self.assertTrue(caught.exception.recovered)
+        self.assertEqual(
+            target.read_bytes(),
+            b"# Doc\n\n## Notes\n\nold.\n",
+        )
+        self.assertTrue(
+            stat.S_ISFIFO(captured["temporary"].lstat().st_mode)
+        )
+
+    @unittest.skipIf(os.name == "nt", "POSIX FIFOs are not portable")
     def test_fifo_swap_after_open_is_rejected_before_initial_read(self):
         target = self._write("target.md", b"# Doc\n\n## Notes\n\nold.\n")
         block = self._write("section.md", b"## Notes\n\nnew.\n")
         original_open = merge_section._open_regular_read_descriptor
 
-        def open_then_replace_with_fifo(target_path, missing_ok=False):
-            descriptor = original_open(target_path, missing_ok=missing_ok)
+        def open_then_replace_with_fifo(
+            target_path,
+            missing_ok=False,
+            reject_encrypted=True,
+        ):
+            descriptor = original_open(
+                target_path,
+                missing_ok=missing_ok,
+                reject_encrypted=reject_encrypted,
+            )
             target.unlink()
             os.mkfifo(target)
             return descriptor
