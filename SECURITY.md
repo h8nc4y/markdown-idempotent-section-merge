@@ -1,8 +1,8 @@
 # Security Policy
 
 This repository documents a Markdown section-merge discipline and ships a
-reference implementation that rewrites files in place. It should never
-contain secrets, but its guidance drives automation that edits user
+reference implementation that atomically replaces ordinary target files. It
+should never contain secrets, but its guidance drives automation that edits user
 documents, so unsafe guidance is treated as a security problem too.
 
 ## Supported Versions
@@ -20,6 +20,22 @@ Use GitHub private vulnerability reporting for:
   destroy user content (for example a boundary rule that swallows a
   neighbouring section without an error), leak private data, or write
   outside the target file.
+- A write-path issue that can truncate the original before commit, leave
+  attacker-controlled temporary files, widen existing permissions, or follow
+  a linked target unexpectedly. The reference implementation uses an
+  exclusive same-directory temporary file and flushes it before final commit,
+  uses Windows
+  [`ReplaceFileW`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew)
+  with a private recovery backup to preserve ACLs/attributes, preserves bounded
+  POSIX owner/group/mode/extended attributes, and refuses symbolic-link,
+  Windows reparse-point, non-regular, or multi-hard-link targets before
+  reading. Recoverable Windows failures restore the verified original;
+  ambiguous partial states retain named recovery artifacts and raise
+  `AtomicCommitError` instead of deleting evidence.
+  Identity, metadata, and bytes are rechecked before commit, but this is a
+  best-effort check rather than compare-and-swap. Serialize all writers
+  externally when lost-update prevention for an existing target is required.
+  Missing-target creation uses a no-replace commit.
 - A validation gap that allows unsafe public examples.
 
 Do not open a public issue containing tokens, credentials, private keys,

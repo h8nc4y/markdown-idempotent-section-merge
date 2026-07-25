@@ -208,12 +208,24 @@ python scripts/merge_section.py TARGET.md SECTION.md --check   # drift check
 
 `SECTION.md` is the canonical block: first line is the exact `## Heading`.
 The target's LF/CRLF style and UTF-8 BOM are preserved; a missing target is
-created (append into an empty document). Malformed input — a duplicate
-heading in the target, an extra heading in the block, an unclosed fence in
-either, CR-only line endings, a possible setext heading inside the span —
-exits with code 2 instead of guessing. When only mixed line endings need
-normalizing, the action is reported honestly as `normalized` /
-`would-normalize`, never as "unchanged".
+created (append into an empty document). Changed bytes are flushed to an
+exclusive same-directory temporary file and installed with one atomic replace;
+Windows ACLs/file attributes and bounded POSIX owner/group/mode/extended
+attributes are preserved. Symbolic-link, non-regular, and multi-hard-link
+targets are refused because replacement would change their semantics; Windows
+reparse points are refused before reading.
+The target identity, metadata, and bytes are rechecked just before commit.
+Changes completed before that check are detected, but the check and replacement
+are separate operations; externally serialize every writer when an existing
+target must not suffer a lost update. Missing-target creation uses a no-replace
+commit and never overwrites a concurrent creation. On Windows, `ReplaceFileW`
+uses a private recovery backup; ambiguous partial failures raise
+`AtomicCommitError` and retain recovery artifacts instead of guessing.
+Malformed input — a duplicate heading in the target, an extra heading in the
+block, an unclosed fence in either, CR-only line endings, a possible setext
+heading inside the span — exits with code 2 instead of guessing. When only
+mixed line endings need normalizing, the action is reported honestly as
+`normalized` / `would-normalize`, never as "unchanged".
 
 The fixtures under [`tests/fixtures/`](tests/fixtures) are one folder per
 case, each with `input.md`, `section.md`, and `expected.md`:
@@ -260,6 +272,9 @@ the scanner back into the trap, these tests fail first.
   endings are refused — they would break byte idempotency. A file mixing
   CRLF and LF is treated as CRLF (any CRLF present selects CRLF), rewritten
   once as `normalized`, and stable from the second run on.
+- The target must be missing or an ordinary file with one hard link.
+  Symbolic-link and multi-hard-link targets are refused; choose the intended
+  ordinary file path explicitly.
 - One file, one section per invocation — by design, so that verification
   stays sharp (`git diff --stat` = exactly one file).
 

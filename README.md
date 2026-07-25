@@ -156,6 +156,21 @@ python scripts/merge_section.py TARGET.md SECTION.md --check   # drift check (ex
 
 `SECTION.md` holds the canonical block: its first line is the exact
 `## Heading`. LF/CRLF style and a UTF-8 BOM are preserved byte-for-byte.
+Changed content is flushed to an exclusive temporary file beside the target
+and committed with one atomic path replacement, so readers never observe a
+partially written document. Windows uses `ReplaceFileW` with a private recovery
+backup to retain ACLs and file attributes; POSIX retains owner/group, permission
+bits, and a bounded set of extended attributes. Symbolic-link, non-regular, and
+multi-hard-link targets are refused because replacing them would silently
+change their semantics; Windows reparse points are refused before reading.
+
+The target's identity, metadata, and bytes are rechecked immediately before
+commit. This detects changes completed before that check, but the check and
+replacement are separate operations: a writer that changes an existing target
+in the final window can still be overwritten. Serialize every writer with an
+external lock or a single runner when lost-update prevention is required.
+A previously missing target is installed with a no-replace operation, so a
+concurrent creation is never overwritten.
 
 Fixtures under [`tests/fixtures/`](tests/fixtures) cover the trap case
 (heading inside a code fence), append, replace, the `###` subheading
@@ -226,6 +241,17 @@ repository paths you cannot publish, or customer data in public issues.
 - When only mixed line endings are normalized, the tool reports
   `normalized` / `would-normalize` — it never claims "unchanged" while
   rewriting bytes.
+- Recoverable Windows replacement failures restore or retain the verified
+  original and remove only artifacts still owned by this invocation. If the
+  filesystem state is ambiguous, `AtomicCommitError` reports whether a commit
+  happened and retains named backup/temporary artifacts for manual recovery.
+  The recovery behavior follows the documented
+  [`ReplaceFileW`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew)
+  failure states.
+- Changes visible before the final recheck stop the merge. The recheck is
+  best-effort, not compare-and-swap; externally serialize writers when an
+  existing target must never suffer a lost update. Concurrent creation of a
+  missing target is protected by no-replace commit.
 - Never paste tokens, credentials, private logs, or customer data into
   issues, examples, or fixture files.
 
@@ -242,6 +268,9 @@ repository paths you cannot publish, or customer data in public issues.
 - UTF-8 with LF or CRLF only; CR-only endings are refused, and files mixing
   CRLF and LF are normalized to CRLF on the first write (reported as
   `normalized`).
+- The reference implementation accepts a missing target or an existing
+  ordinary file with one hard link. Symbolic links and multi-hard-link files
+  are refused; choose the intended ordinary file path explicitly.
 
 ## Non-Goals
 

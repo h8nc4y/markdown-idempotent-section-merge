@@ -8,6 +8,17 @@ The format loosely follows Keep a Changelog conventions.
 
 ### Changed
 
+- Write merged Markdown through an exclusive same-directory temporary file,
+  flush it, and commit with one atomic path replacement. Preserve Windows
+  ACLs/file attributes and bounded POSIX owner/group/mode/extended attributes;
+  refuse symbolic-link, Windows reparse-point, non-regular, or multi-hard-link
+  targets before reading rather than silently changing their semantics. Windows
+  existing-target commits now use a private `ReplaceFileW` recovery backup,
+  reconcile documented partial-failure states, and retain ambiguous artifacts
+  with structured commit/recovery status.
+  Recheck target identity, metadata, and bytes immediately before commit while
+  documenting that this is best-effort rather than compare-and-swap; missing
+  targets still use a no-replace commit.
 - Make the private-marker scanner hermetic and bounded across Windows and
   POSIX. It now isolates every Git child from ambient `GIT_*` state, hooks,
   filters, attributes, templates, traces, replace objects, lazy fetching,

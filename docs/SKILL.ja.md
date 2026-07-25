@@ -183,6 +183,19 @@ begin/end マーカー行（完全一致）の間を丸ごと置換し、begin �
 （シェルのテキストパイプラインは裏で改行を正規化しがち）。アルゴリズムは
 どの言語にもそのまま移植できます。
 
+変更内容はターゲットと同じディレクトリの排他的な一時ファイルへ全量を書き、
+flush 後に1回の原子的置換で確定します。Windows は `ReplaceFileW` で ACL と
+ファイル属性を、POSIX は owner/group・権限ビット・上限付き拡張属性を維持
+します。シンボリックリンク、Windows reparse point、通常ファイル以外、
+複数ハードリンクを持つターゲットは、その意味を暗黙に変えないよう読込み前に
+拒否します。
+確定直前にターゲットの identity・metadata・全バイトを再確認します。この
+再確認より前に完了した変更は検出できますが、再確認と置換は別操作です。
+既存ターゲットの lost update を防ぐ必要がある場合は、すべての writer を
+外部 lock または単一 runner で直列化してください。未作成ターゲットは
+no-replace で確定するため、並行する新規作成を上書きしません。Windows の
+曖昧な部分失敗では `AtomicCommitError` と回復用 artifact を残します。
+
 ```bash
 python scripts/merge_section.py TARGET.md SECTION.md            # その場でマージ
 python scripts/merge_section.py TARGET.md SECTION.md --check   # ドリフト検知
@@ -239,6 +252,9 @@ python scripts/test_merge_section.py
   拒否します — バイト冪等性が破れるため。CRLF と LF が混在するファイルは
   CRLF として扱われ（CRLF が1つでもあれば CRLF）、初回に `normalized`
   として一度だけ書き換えられ、2回目以降は安定します。
+- ターゲットは未作成、またはハードリンク数1の通常ファイルに限ります。
+  シンボリックリンクと複数ハードリンクのファイルは拒否するため、更新対象の
+  通常ファイルを明示してください。
 - 1回の実行で1ファイル・1節 — 検証を鋭く保つための設計です
   （`git diff --stat` = ちょうど1ファイル）。
 
