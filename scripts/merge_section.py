@@ -19,6 +19,15 @@ Reference implementation for the markdown-idempotent-section-merge skill:
   (apply-twice-diff-zero). The target's line-ending style (LF or CRLF) and
   UTF-8 BOM are preserved; when only mixed line endings need normalizing,
   the action is reported as ``normalized``, not hidden.
+- Changed content is flushed to a private same-directory temporary file and
+  installed with one atomic replace. Target and block are read without
+  following links; non-regular and multi-hard-link inputs are refused.
+  Windows uses documented ``ReplaceFileW`` DACL/attribute/stream behavior;
+  POSIX preserves owner/group, mode, and bounded extended attributes.
+  The target identity, metadata, and bytes are rechecked immediately before
+  commit. This is a best-effort conflict check, not compare-and-swap: writers
+  needing strict lost-update prevention must serialize externally. Creation
+  of a previously missing target uses an atomic no-replace commit.
 
 Usage:
 
@@ -35,7 +44,11 @@ it. 2 = usage or validation error.
 """
 
 import argparse
+import errno
+import os
 import re
+import secrets
+import stat
 import sys
 from pathlib import Path
 
@@ -60,10 +73,26 @@ _H2_RE = re.compile(r"^##(?:[ \t]|$)")
 _SETEXT_RE = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
 
 _BOM = b"\xef\xbb\xbf"
+_MAX_XATTR_COUNT = 256
+_MAX_XATTR_BYTES = 1024 * 1024
 
 
 class MergeError(ValueError):
     """Raised when the block or the target violates a merge invariant."""
+
+
+class AtomicCommitError(MergeError):
+    """Report a partial commit without discarding recovery files.
+
+    ``committed`` is True, False, or None when the observed state cannot
+    prove either outcome.
+    """
+
+    def __init__(self, message, committed=False, recovered=False, artifacts=()):
+        super().__init__(message)
+        self.committed = committed
+        self.recovered = recovered
+        self.artifacts = tuple(artifacts)
 
 
 def _fence_scan(lines):
@@ -245,6 +274,1698 @@ def _decode(raw, what):
     return text
 
 
+def _inspect_target(target, allow_multiple_links=False):
+    """Return TARGET's ``lstat`` result, refusing link ambiguity."""
+
+    try:
+        target_stat = target.lstat()
+    except FileNotFoundError:
+        return None
+
+    # Replacing a symlink atomically changes the link itself, while the old
+    # direct write followed it. Refuse instead of silently changing which
+    # filesystem object the command updates.
+    if stat.S_ISLNK(target_stat.st_mode):
+        raise MergeError("target is a symbolic link; refusing atomic replacement")
+
+    # FIFOs, sockets, devices, and directories can block or perform side
+    # effects when read. The command only rewrites ordinary regular files.
+    if not stat.S_ISREG(target_stat.st_mode):
+        raise MergeError("target is not a regular file; refusing atomic replacement")
+
+    # An atomic rename necessarily breaks a hard-link set. Updating the shared
+    # inode in place would preserve the links but reintroduce partial writes, so
+    # require the caller to choose an ordinary single-link target explicitly.
+    if target_stat.st_nlink > 1 and not allow_multiple_links:
+        raise MergeError("target has multiple hard links; refusing atomic replacement")
+
+    return target_stat
+
+
+def _open_windows_atomic_temporary(target):
+    """Create a Windows temp with an owner/SYSTEM-only protected DACL."""
+
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class SecurityAttributes(ctypes.Structure):
+        _fields_ = (
+            ("nLength", wintypes.DWORD),
+            ("lpSecurityDescriptor", wintypes.LPVOID),
+            ("bInheritHandle", wintypes.BOOL),
+        )
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    convert_descriptor = (
+        advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW
+    )
+    convert_descriptor.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.DWORD),
+    )
+    convert_descriptor.restype = wintypes.BOOL
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(SecurityAttributes),
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+    local_free = kernel32.LocalFree
+    local_free.argtypes = (wintypes.HLOCAL,)
+    local_free.restype = wintypes.HLOCAL
+
+    security_descriptor = wintypes.LPVOID()
+    sddl_revision_1 = 1
+    # P marks the DACL protected from parent inheritance. SYSTEM remains able
+    # to service the file; OW grants full access only to the assigned owner.
+    if not convert_descriptor(
+        "D:P(A;;FA;;;SY)(A;;FA;;;OW)",
+        sddl_revision_1,
+        ctypes.byref(security_descriptor),
+        None,
+    ):
+        _raise_windows_api_error(ctypes.get_last_error(), target)
+    security_attributes = SecurityAttributes(
+        ctypes.sizeof(SecurityAttributes),
+        security_descriptor,
+        False,
+    )
+
+    generic_write = 0x40000000
+    share_read_write_delete = 0x00000001 | 0x00000002 | 0x00000004
+    create_new = 1
+    file_attribute_normal = 0x0080
+    invalid_handle = ctypes.c_void_p(-1).value
+
+    try:
+        for _attempt in range(32):
+            temporary = target.parent / (
+                ".%s.%s.tmp" % (target.name, secrets.token_hex(12))
+            )
+            handle = create_file(
+                os.path.abspath(os.fspath(temporary)),
+                generic_write,
+                share_read_write_delete,
+                ctypes.byref(security_attributes),
+                create_new,
+                file_attribute_normal,
+                None,
+            )
+            if handle == invalid_handle:
+                error_code = ctypes.get_last_error()
+                if error_code in (80, 183):
+                    continue
+                _raise_windows_api_error(error_code, temporary)
+
+            try:
+                descriptor = msvcrt.open_osfhandle(
+                    handle,
+                    os.O_WRONLY
+                    | getattr(os, "O_BINARY", 0)
+                    | getattr(os, "O_NOINHERIT", 0),
+                )
+            except BaseException as descriptor_error:
+                close_handle(handle)
+                # No Python fd exists from which to retain an identity
+                # fingerprint. Leave the unpredictable private file behind
+                # rather than risk unlinking a path another writer swapped,
+                # and surface its exact name through the structured CLI path.
+                raise AtomicCommitError(
+                    "Windows temporary descriptor setup failed",
+                    committed=False,
+                    recovered=True,
+                    artifacts=(temporary,),
+                ) from descriptor_error
+            return descriptor, temporary
+    finally:
+        local_free(security_descriptor)
+    raise OSError("could not allocate an exclusive temporary file")
+
+
+def _open_atomic_temporary(target):
+    """Create an owner-only exclusive same-directory temp for TARGET."""
+
+    if os.name == "nt":
+        return _open_windows_atomic_temporary(target)
+
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_BINARY", 0)
+
+    # Same-directory creation keeps the final os.replace on one filesystem.
+    # O_EXCL prevents a pre-created link from redirecting the temporary write.
+    for _attempt in range(32):
+        temporary = target.parent / (
+            ".%s.%s.tmp" % (target.name, secrets.token_hex(12))
+        )
+        try:
+            # Content is written only after creation, so start at 0600.
+            # Existing-target mode is copied before commit on POSIX.
+            descriptor = os.open(temporary, flags, 0o600)
+        except FileExistsError:
+            continue
+        try:
+            # open(2) applies umask even to an explicit 0600 request. Restore
+            # the exact private mode before any document bytes are written.
+            os.fchmod(descriptor, 0o600)
+        except BaseException as mode_error:
+            try:
+                os.close(descriptor)
+            except BaseException:
+                pass
+            raise AtomicCommitError(
+                "POSIX temporary private-mode setup failed",
+                committed=False,
+                recovered=True,
+                artifacts=_existing_artifacts((temporary,)),
+            ) from mode_error
+        return descriptor, temporary
+    raise OSError("could not allocate an exclusive temporary file")
+
+
+def _copy_posix_metadata(target, descriptor, target_stat):
+    """Copy bounded metadata that an inode-replacing commit would lose."""
+
+    if hasattr(os, "fchown"):
+        os.fchown(descriptor, target_stat.st_uid, target_stat.st_gid)
+    os.fchmod(descriptor, stat.S_IMODE(target_stat.st_mode))
+
+    # Linux and several Unix variants expose ACL/security labels through
+    # extended attributes. Preserve a bounded set or abort before commit;
+    # silently dropping metadata is less safe than leaving the target intact.
+    if not all(
+        hasattr(os, name)
+        for name in ("listxattr", "getxattr", "setxattr")
+    ):
+        return
+    names = os.listxattr(target, follow_symlinks=False)
+    if len(names) > _MAX_XATTR_COUNT:
+        raise MergeError("target has too many extended attributes to preserve")
+
+    total_bytes = 0
+    for name in names:
+        value = os.getxattr(target, name, follow_symlinks=False)
+        total_bytes += len(os.fsencode(name)) + len(value)
+        if total_bytes > _MAX_XATTR_BYTES:
+            raise MergeError("target extended attributes exceed the preservation limit")
+        os.setxattr(descriptor, name, value)
+
+
+def _stat_fingerprint(value):
+    """Return fields that expose replacement or mutation of one target."""
+
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_nlink,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+        getattr(value, "st_file_attributes", None),
+        getattr(value, "st_reparse_tag", None),
+    )
+
+
+def _open_windows_regular_read_descriptor(
+    target,
+    missing_ok,
+    reject_encrypted=True,
+):
+    """Open TARGET without traversing a Windows reparse point."""
+
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class ByHandleFileInformation(ctypes.Structure):
+        _fields_ = (
+            ("dwFileAttributes", wintypes.DWORD),
+            ("ftCreationTime", wintypes.FILETIME),
+            ("ftLastAccessTime", wintypes.FILETIME),
+            ("ftLastWriteTime", wintypes.FILETIME),
+            ("dwVolumeSerialNumber", wintypes.DWORD),
+            ("nFileSizeHigh", wintypes.DWORD),
+            ("nFileSizeLow", wintypes.DWORD),
+            ("nNumberOfLinks", wintypes.DWORD),
+            ("nFileIndexHigh", wintypes.DWORD),
+            ("nFileIndexLow", wintypes.DWORD),
+        )
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    get_file_type = kernel32.GetFileType
+    get_file_type.argtypes = (wintypes.HANDLE,)
+    get_file_type.restype = wintypes.DWORD
+    get_information = kernel32.GetFileInformationByHandle
+    get_information.argtypes = (
+        wintypes.HANDLE,
+        ctypes.POINTER(ByHandleFileInformation),
+    )
+    get_information.restype = wintypes.BOOL
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+
+    generic_read = 0x80000000
+    share_read_write_delete = 0x00000001 | 0x00000002 | 0x00000004
+    open_existing = 3
+    file_flag_open_reparse_point = 0x00200000
+    file_flag_backup_semantics = 0x02000000
+    invalid_handle = ctypes.c_void_p(-1).value
+
+    handle = create_file(
+        os.path.abspath(os.fspath(target)),
+        generic_read,
+        share_read_write_delete,
+        None,
+        open_existing,
+        file_flag_open_reparse_point | file_flag_backup_semantics,
+        None,
+    )
+    if handle == invalid_handle:
+        error_code = ctypes.get_last_error()
+        if missing_ok and error_code in (2, 3):
+            return None
+        _raise_windows_api_error(error_code, target)
+
+    descriptor = None
+    try:
+        information = ByHandleFileInformation()
+        if not get_information(handle, ctypes.byref(information)):
+            _raise_windows_api_error(ctypes.get_last_error(), target)
+
+        file_type_disk = 0x0001
+        file_attribute_directory = 0x0010
+        file_attribute_reparse_point = 0x0400
+        file_attribute_encrypted = 0x4000
+        if (
+            get_file_type(handle) != file_type_disk
+            or information.dwFileAttributes & file_attribute_directory
+        ):
+            raise MergeError(
+                "target is not a regular file; refusing atomic replacement"
+            )
+        if information.dwFileAttributes & file_attribute_reparse_point:
+            raise MergeError(
+                "target is a symbolic link or reparse point; "
+                "refusing atomic replacement"
+            )
+        if (
+            reject_encrypted
+            and information.dwFileAttributes & file_attribute_encrypted
+        ):
+            raise MergeError(
+                "target uses EFS encryption; refusing plaintext temporary write"
+            )
+        if information.nNumberOfLinks > 1:
+            raise MergeError(
+                "target has multiple hard links; refusing atomic replacement"
+            )
+
+        # open_osfhandle transfers ownership of HANDLE to the Python fd.
+        # From this point os.close/fdopen is the only valid closer.
+        descriptor = msvcrt.open_osfhandle(
+            handle,
+            os.O_RDONLY | getattr(os, "O_BINARY", 0),
+        )
+        handle = None
+        return descriptor
+    finally:
+        if handle is not None:
+            close_handle(handle)
+
+
+def _open_regular_read_descriptor(
+    target,
+    missing_ok=False,
+    reject_encrypted=True,
+):
+    """Open TARGET for a bounded-type read without following a link."""
+
+    if os.name == "nt":
+        return _open_windows_regular_read_descriptor(
+            target,
+            missing_ok,
+            reject_encrypted=reject_encrypted,
+        )
+
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    # A FIFO opened read-only can otherwise wait forever before fstat gets a
+    # chance to reject it. O_NONBLOCK has no effect on regular-file reads.
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    try:
+        return os.open(target, flags)
+    except FileNotFoundError:
+        if missing_ok:
+            return None
+        raise
+    except OSError as error:
+        if error.errno in (errno.ELOOP, errno.EMLINK):
+            raise MergeError(
+                "target is a symbolic link; refusing atomic replacement"
+            ) from error
+        raise
+
+
+def _assert_windows_descriptor_owned_by_effective_owner(descriptor, target):
+    """Refuse replacing a Windows file owned by a different effective SID."""
+
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class TokenOwner(ctypes.Structure):
+        _fields_ = (("Owner", wintypes.LPVOID),)
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    get_security = advapi32.GetSecurityInfo
+    get_security.argtypes = (
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.LPVOID),
+    )
+    get_security.restype = wintypes.DWORD
+    open_process_token = advapi32.OpenProcessToken
+    open_process_token.argtypes = (
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.HANDLE),
+    )
+    open_process_token.restype = wintypes.BOOL
+    open_thread_token = advapi32.OpenThreadToken
+    open_thread_token.argtypes = (
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.BOOL,
+        ctypes.POINTER(wintypes.HANDLE),
+    )
+    open_thread_token.restype = wintypes.BOOL
+    get_token_information = advapi32.GetTokenInformation
+    get_token_information.argtypes = (
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    )
+    get_token_information.restype = wintypes.BOOL
+    equal_sid = advapi32.EqualSid
+    equal_sid.argtypes = (wintypes.LPVOID, wintypes.LPVOID)
+    equal_sid.restype = wintypes.BOOL
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    get_current_process = kernel32.GetCurrentProcess
+    get_current_process.restype = wintypes.HANDLE
+    get_current_thread = kernel32.GetCurrentThread
+    get_current_thread.restype = wintypes.HANDLE
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+    local_free = kernel32.LocalFree
+    local_free.argtypes = (wintypes.HLOCAL,)
+    local_free.restype = wintypes.HLOCAL
+
+    owner_sid = wintypes.LPVOID()
+    security_descriptor = wintypes.LPVOID()
+    owner_security_information = 0x00000001
+    se_file_object = 1
+    error_code = get_security(
+        msvcrt.get_osfhandle(descriptor),
+        se_file_object,
+        owner_security_information,
+        ctypes.byref(owner_sid),
+        None,
+        None,
+        None,
+        ctypes.byref(security_descriptor),
+    )
+    if error_code:
+        _raise_windows_api_error(error_code, target)
+
+    token = wintypes.HANDLE()
+    token_query = 0x0008
+    try:
+        # An impersonating thread creates objects with its effective token.
+        # Fall back to the process token only when no thread token exists.
+        if not open_thread_token(
+            get_current_thread(),
+            token_query,
+            True,
+            ctypes.byref(token),
+        ):
+            error_no_token = 1008
+            if ctypes.get_last_error() != error_no_token or not open_process_token(
+                get_current_process(),
+                token_query,
+                ctypes.byref(token),
+            ):
+                _raise_windows_api_error(ctypes.get_last_error(), target)
+
+        token_owner = 4
+        required = wintypes.DWORD()
+        get_token_information(
+            token,
+            token_owner,
+            None,
+            0,
+            ctypes.byref(required),
+        )
+        if required.value == 0:
+            _raise_windows_api_error(ctypes.get_last_error(), target)
+        token_buffer = ctypes.create_string_buffer(required.value)
+        if not get_token_information(
+            token,
+            token_owner,
+            token_buffer,
+            required.value,
+            ctypes.byref(required),
+        ):
+            _raise_windows_api_error(ctypes.get_last_error(), target)
+        default_owner_sid = ctypes.cast(
+            token_buffer,
+            ctypes.POINTER(TokenOwner),
+        ).contents.Owner
+        if not equal_sid(owner_sid, default_owner_sid):
+            raise MergeError(
+                "target owner differs from the effective Windows token owner; "
+                "refusing replacement"
+            )
+    finally:
+        if token:
+            close_handle(token)
+        local_free(security_descriptor)
+
+
+def _assert_windows_owner_only_dacl(descriptor, target):
+    """Require the private Windows temporary's exact protected DACL."""
+
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class AclSizeInformation(ctypes.Structure):
+        _fields_ = (
+            ("AceCount", wintypes.DWORD),
+            ("AclBytesInUse", wintypes.DWORD),
+            ("AclBytesFree", wintypes.DWORD),
+        )
+
+    class AceHeader(ctypes.Structure):
+        _fields_ = (
+            ("AceType", wintypes.BYTE),
+            ("AceFlags", wintypes.BYTE),
+            ("AceSize", wintypes.WORD),
+        )
+
+    class AccessAllowedAce(ctypes.Structure):
+        _fields_ = (
+            ("Header", AceHeader),
+            ("Mask", wintypes.DWORD),
+            ("SidStart", wintypes.DWORD),
+        )
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    get_security = advapi32.GetSecurityInfo
+    get_security.argtypes = (
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.LPVOID),
+    )
+    get_security.restype = wintypes.DWORD
+    get_control = advapi32.GetSecurityDescriptorControl
+    get_control.argtypes = (
+        wintypes.LPVOID,
+        ctypes.POINTER(wintypes.WORD),
+        ctypes.POINTER(wintypes.DWORD),
+    )
+    get_control.restype = wintypes.BOOL
+    get_acl_information = advapi32.GetAclInformation
+    get_acl_information.argtypes = (
+        wintypes.LPVOID,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    )
+    get_acl_information.restype = wintypes.BOOL
+    get_ace = advapi32.GetAce
+    get_ace.argtypes = (
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.LPVOID),
+    )
+    get_ace.restype = wintypes.BOOL
+    convert_sid = advapi32.ConvertStringSidToSidW
+    convert_sid.argtypes = (
+        wintypes.LPCWSTR,
+        ctypes.POINTER(wintypes.LPVOID),
+    )
+    convert_sid.restype = wintypes.BOOL
+    equal_sid = advapi32.EqualSid
+    equal_sid.argtypes = (wintypes.LPVOID, wintypes.LPVOID)
+    equal_sid.restype = wintypes.BOOL
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    local_free = kernel32.LocalFree
+    local_free.argtypes = (wintypes.HLOCAL,)
+    local_free.restype = wintypes.HLOCAL
+
+    dacl = wintypes.LPVOID()
+    security_descriptor = wintypes.LPVOID()
+    dacl_security_information = 0x00000004
+    se_file_object = 1
+    error_code = get_security(
+        msvcrt.get_osfhandle(descriptor),
+        se_file_object,
+        dacl_security_information,
+        None,
+        None,
+        ctypes.byref(dacl),
+        None,
+        ctypes.byref(security_descriptor),
+    )
+    if error_code:
+        _raise_windows_api_error(error_code, target)
+
+    expected_sids = []
+    try:
+        control = wintypes.WORD()
+        revision = wintypes.DWORD()
+        if not get_control(
+            security_descriptor,
+            ctypes.byref(control),
+            ctypes.byref(revision),
+        ):
+            _raise_windows_api_error(ctypes.get_last_error(), target)
+
+        # The creation SDDL is a security boundary: inheritance must remain
+        # disabled and no third ACE may gain access before the rename.
+        se_dacl_protected = 0x1000
+        if not dacl or not control.value & se_dacl_protected:
+            raise MergeError(
+                "replacement temporary DACL changed before commit"
+            )
+
+        information = AclSizeInformation()
+        acl_size_information = 2
+        if not get_acl_information(
+            dacl,
+            ctypes.byref(information),
+            ctypes.sizeof(information),
+            acl_size_information,
+        ):
+            _raise_windows_api_error(ctypes.get_last_error(), target)
+        if information.AceCount != 2:
+            raise MergeError(
+                "replacement temporary DACL changed before commit"
+            )
+
+        # Match semantic ACEs instead of serialized descriptor bytes: Windows
+        # may canonicalize storage while retaining the same access policy.
+        for sid_text in ("S-1-5-18", "S-1-3-4"):
+            sid = wintypes.LPVOID()
+            if not convert_sid(sid_text, ctypes.byref(sid)):
+                _raise_windows_api_error(ctypes.get_last_error(), target)
+            expected_sids.append(sid)
+
+        matched = [False, False]
+        file_all_access = 0x001F01FF
+        access_allowed_ace_type = 0
+        for index in range(information.AceCount):
+            ace_pointer = wintypes.LPVOID()
+            if not get_ace(dacl, index, ctypes.byref(ace_pointer)):
+                _raise_windows_api_error(ctypes.get_last_error(), target)
+            ace = ctypes.cast(
+                ace_pointer,
+                ctypes.POINTER(AccessAllowedAce),
+            ).contents
+            if (
+                ace.Header.AceType != access_allowed_ace_type
+                or ace.Header.AceFlags != 0
+                or ace.Mask != file_all_access
+            ):
+                raise MergeError(
+                    "replacement temporary DACL changed before commit"
+                )
+            sid_pointer = ctypes.c_void_p(
+                ace_pointer.value + AccessAllowedAce.SidStart.offset
+            )
+            sid_matches = [
+                bool(equal_sid(sid_pointer, expected))
+                for expected in expected_sids
+            ]
+            if sum(sid_matches) != 1:
+                raise MergeError(
+                    "replacement temporary DACL changed before commit"
+                )
+            matched[sid_matches.index(True)] = True
+        if matched != [True, True]:
+            raise MergeError(
+                "replacement temporary DACL changed before commit"
+            )
+    finally:
+        for sid in expected_sids:
+            local_free(sid)
+        local_free(security_descriptor)
+
+
+def _read_regular_file_snapshot(
+    target,
+    missing_ok=False,
+    allow_multiple_links=False,
+    require_effective_owner=True,
+    reject_encrypted=True,
+):
+    """Read one stable regular-file object and verify its path identity."""
+
+    descriptor = _open_regular_read_descriptor(
+        target,
+        missing_ok=missing_ok,
+        reject_encrypted=reject_encrypted,
+    )
+    if descriptor is None:
+        return None, b""
+
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise MergeError(
+                "target is not a regular file; refusing atomic replacement"
+            )
+        if before.st_nlink > 1 and not allow_multiple_links:
+            raise MergeError(
+                "target has multiple hard links; refusing atomic replacement"
+            )
+        if os.name == "nt" and require_effective_owner:
+            _assert_windows_descriptor_owned_by_effective_owner(
+                descriptor,
+                target,
+            )
+
+        # OPEN_REPARSE_POINT/O_NOFOLLOW protects the open itself. The path
+        # checks also detect a rename/swap after the handle was acquired.
+        path_before = _inspect_target(
+            target,
+            allow_multiple_links=allow_multiple_links,
+        )
+        if (
+            path_before is None
+            or not _same_file_identity(path_before, before)
+        ):
+            raise MergeError("target changed while being opened")
+
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = None
+            raw = stream.read()
+            after = os.fstat(stream.fileno())
+            path_after = _inspect_target(
+                target,
+                allow_multiple_links=allow_multiple_links,
+            )
+            if _stat_fingerprint(after) != _stat_fingerprint(before):
+                raise MergeError("target changed while being read")
+            if (
+                path_after is None
+                or not _same_file_identity(path_after, after)
+            ):
+                raise MergeError("target path changed while being read")
+        return after, raw
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _assert_target_unchanged(target, target_stat, original_bytes):
+    """Fail before commit when another writer changed TARGET."""
+
+    current_before, current_bytes = _read_regular_file_snapshot(
+        target,
+        missing_ok=True,
+    )
+    if target_stat is None:
+        if current_before is not None:
+            raise MergeError("target appeared during merge; refusing to overwrite it")
+        return
+    if current_before is None:
+        raise MergeError("target disappeared during merge")
+    if _stat_fingerprint(current_before) != _stat_fingerprint(target_stat):
+        raise MergeError("target metadata changed during merge")
+
+    if current_bytes != original_bytes:
+        raise MergeError("target content changed during merge")
+
+
+def _move_file_windows_no_replace_raw(source, destination):
+    """Return zero or the Win32 error from a no-replace durable move."""
+
+    import ctypes
+    from ctypes import wintypes
+
+    move_file = ctypes.WinDLL("kernel32", use_last_error=True).MoveFileExW
+    move_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+    )
+    move_file.restype = wintypes.BOOL
+    movefile_write_through = 0x00000008
+    if move_file(
+        os.path.abspath(os.fspath(source)),
+        os.path.abspath(os.fspath(destination)),
+        movefile_write_through,
+    ):
+        return 0
+    return ctypes.get_last_error()
+
+
+def _verified_replacement_snapshot(
+    temporary,
+    expected_stat,
+    expected_bytes,
+):
+    """Verify that the commit path still names the file this call wrote."""
+
+    current_stat, current_bytes = _read_regular_file_snapshot(temporary)
+    if (
+        current_stat is None
+        or _stat_fingerprint(current_stat) != _stat_fingerprint(expected_stat)
+        or current_bytes != expected_bytes
+    ):
+        raise MergeError("replacement temporary changed before commit")
+    if os.name == "nt":
+        descriptor = _open_windows_regular_read_descriptor(
+            temporary,
+            missing_ok=False,
+        )
+        try:
+            _assert_windows_owner_only_dacl(descriptor, temporary)
+        finally:
+            os.close(descriptor)
+    return current_stat
+
+
+def _move_new_windows_file(
+    target,
+    temporary,
+    expected_stat,
+    expected_bytes,
+):
+    """Atomically install a missing Windows target without replacement."""
+
+    try:
+        current_stat = _verified_replacement_snapshot(
+            temporary,
+            expected_stat,
+            expected_bytes,
+        )
+    except BaseException as verification_error:
+        raise AtomicCommitError(
+            "Windows no-replace temporary could not be verified",
+            committed=False,
+            recovered=True,
+            artifacts=_existing_artifacts((temporary,)),
+        ) from verification_error
+
+    native_failure = None
+    try:
+        error_code = _move_file_windows_no_replace_raw(temporary, target)
+    except BaseException as move_error:
+        # KeyboardInterrupt can arrive after MoveFileExW changed the name but
+        # before Python observed its return value. Reconcile both names before
+        # deciding whether cleanup is safe.
+        native_failure = move_error
+        error_code = None
+
+    if native_failure is not None:
+        if _path_matches_expected(target, current_stat, expected_bytes):
+            raise AtomicCommitError(
+                "Windows no-replace move raised after the target was "
+                "observably committed",
+                committed=True,
+                recovered=False,
+                artifacts=_existing_artifacts((temporary,)),
+            ) from native_failure
+
+        try:
+            target_missing = _inspect_target(target) is None
+        except (MergeError, OSError):
+            target_missing = False
+        if target_missing and _path_matches_expected(
+            temporary,
+            current_stat,
+            expected_bytes,
+        ):
+            try:
+                _unlink_owned_path(temporary, current_stat)
+            except BaseException:
+                raise AtomicCommitError(
+                    "Windows no-replace move was interrupted before commit "
+                    "and temporary cleanup was unsafe",
+                    committed=False,
+                    recovered=True,
+                    artifacts=_existing_artifacts((temporary,)),
+                ) from native_failure
+            raise native_failure
+
+        raise AtomicCommitError(
+            "Windows no-replace move was interrupted and its state is "
+            "ambiguous",
+            committed=None,
+            recovered=False,
+            artifacts=_existing_artifacts((target, temporary)),
+        ) from native_failure
+
+    if error_code:
+        if _path_matches_expected(target, current_stat, expected_bytes):
+            raise AtomicCommitError(
+                "Windows no-replace move reported failure after the target "
+                "was observably committed",
+                committed=True,
+                recovered=False,
+                artifacts=_existing_artifacts((temporary,)),
+            )
+        try:
+            _unlink_owned_path(temporary, current_stat)
+        except BaseException:
+            raise AtomicCommitError(
+                "Windows no-replace move failed and temporary cleanup "
+                "was unsafe",
+                committed=False,
+                recovered=True,
+                artifacts=_existing_artifacts((temporary,)),
+            )
+        _raise_windows_api_error(error_code, target)
+
+    if not _path_matches_expected(target, current_stat, expected_bytes):
+        raise AtomicCommitError(
+            "Windows no-replace move succeeded but the target could not "
+            "be verified",
+            committed=True,
+            recovered=False,
+            artifacts=_existing_artifacts((temporary,)),
+        )
+
+
+def _replace_file_windows_raw(target, temporary, backup):
+    """Return zero or the Win32 error from ``ReplaceFileW``."""
+
+    import ctypes
+    from ctypes import wintypes
+
+    replace_file = ctypes.WinDLL("kernel32", use_last_error=True).ReplaceFileW
+    replace_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.LPVOID,
+    )
+    replace_file.restype = wintypes.BOOL
+    if replace_file(
+        os.path.abspath(os.fspath(target)),
+        os.path.abspath(os.fspath(temporary)),
+        os.path.abspath(os.fspath(backup)),
+        0,
+        None,
+        None,
+    ):
+        return 0
+    return ctypes.get_last_error()
+
+
+def _open_windows_backup_placeholder(target):
+    """Reserve one unpredictable same-directory ReplaceFileW backup name."""
+
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_BINARY", 0)
+    for _attempt in range(32):
+        backup = target.parent / (
+            ".%s.%s.replace-backup" % (target.name, secrets.token_hex(12))
+        )
+        try:
+            descriptor = os.open(backup, flags, 0o600)
+        except FileExistsError:
+            continue
+        except BaseException as open_error:
+            raise _windows_commit_state_error(
+                "Windows recovery backup could not be opened safely",
+                committed=False,
+                recovered=True,
+                paths=(backup,),
+            ) from open_error
+
+        placeholder_stat = None
+        try:
+            placeholder_stat = os.fstat(descriptor)
+            os.fsync(descriptor)
+        except BaseException as setup_error:
+            # 予約名を作った後の失敗では、閉じられたことと同じ file
+            # identity のままであることを確認できた場合だけ片付ける。
+            try:
+                os.close(descriptor)
+            except BaseException:
+                raise _windows_commit_state_error(
+                    "Windows recovery backup setup failed while closing its placeholder",
+                    committed=False,
+                    recovered=True,
+                    paths=(backup,),
+                ) from setup_error
+            if placeholder_stat is None:
+                raise _windows_commit_state_error(
+                    "Windows recovery backup setup failed before its identity "
+                    "could be recorded",
+                    committed=False,
+                    recovered=True,
+                    paths=(backup,),
+                ) from setup_error
+            try:
+                _unlink_owned_path(backup, placeholder_stat)
+            except BaseException:
+                raise _windows_commit_state_error(
+                    "Windows recovery backup setup failed and its placeholder cleanup was unsafe",
+                    committed=False,
+                    recovered=True,
+                    paths=(backup,),
+                ) from setup_error
+            raise AtomicCommitError(
+                "Windows recovery backup setup failed before replacement",
+                committed=False,
+                recovered=True,
+                artifacts=(),
+            ) from setup_error
+        try:
+            os.close(descriptor)
+        except BaseException as close_error:
+            # close 失敗時は descriptor が閉じたと推測せず、回復用の
+            # placeholder を残して利用者へ明示する。
+            raise _windows_commit_state_error(
+                "Windows recovery backup placeholder could not be closed safely",
+                committed=False,
+                recovered=True,
+                paths=(backup,),
+            ) from close_error
+        return backup, placeholder_stat
+    raise OSError("could not allocate an exclusive recovery backup")
+
+
+def _same_file_identity(left, right):
+    """Compare stable filesystem identity without following path aliases."""
+
+    return left.st_dev == right.st_dev and left.st_ino == right.st_ino
+
+
+def _path_matches_expected(
+    path,
+    expected_stat,
+    expected_bytes,
+    allow_multiple_links=False,
+):
+    """Return whether PATH is the expected file object and exact bytes."""
+
+    try:
+        current, current_bytes = _read_regular_file_snapshot(
+            path,
+            missing_ok=True,
+            allow_multiple_links=allow_multiple_links,
+        )
+        return (
+            current is not None
+            and _same_file_identity(current, expected_stat)
+            and current_bytes == expected_bytes
+        )
+    except (MergeError, OSError):
+        return False
+
+
+def _unlink_owned_path(path, expected_stat):
+    """Delete PATH only while it still names the object this call created."""
+
+    try:
+        current = path.lstat()
+    except FileNotFoundError:
+        return
+    if not _same_file_identity(current, expected_stat):
+        raise MergeError("recovery artifact identity changed; refusing cleanup")
+    path.unlink()
+
+
+def _existing_artifacts(paths):
+    """Return paths that exist or whose absence cannot be proved safely."""
+
+    existing = []
+    for path in paths:
+        if path is None:
+            continue
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            continue
+        except BaseException:
+            # Permission/I/O failure after a partial commit must not mask the
+            # structured state. Interrupts are also conservatively retained:
+            # this formatter must never replace the primary commit outcome.
+            pass
+        existing.append(path)
+    return existing
+
+
+def _owned_artifacts(path_identities):
+    """Return only still-owned paths, retaining uninspectable candidates."""
+
+    owned = []
+    for path, expected_stat in path_identities:
+        if path is None:
+            continue
+        try:
+            current = path.lstat()
+        except FileNotFoundError:
+            continue
+        except BaseException:
+            # If identity cannot be inspected, keep the candidate visible for
+            # manual recovery. A proven mismatch, by contrast, is foreign.
+            owned.append(path)
+            continue
+        if expected_stat is None or _same_file_identity(
+            current,
+            expected_stat,
+        ):
+            owned.append(path)
+    return owned
+
+
+def _windows_commit_state_error(message, committed, recovered, paths):
+    """Create a structured partial-commit error and retain every artifact."""
+
+    artifacts = _existing_artifacts(paths)
+    suffix = ""
+    if artifacts:
+        suffix = "; retained artifacts: " + ", ".join(
+            ascii(os.fspath(path)) for path in artifacts
+        )
+    return AtomicCommitError(
+        message + suffix,
+        committed=committed,
+        recovered=recovered,
+        artifacts=artifacts,
+    )
+
+
+def _raise_windows_api_error(error_code, target):
+    """Raise one native-style error after a safe rollback/cleanup."""
+
+    import ctypes
+
+    message = (
+        ctypes.FormatError(error_code)
+        if hasattr(ctypes, "FormatError")
+        else "Windows error %d" % error_code
+    )
+    raise OSError(
+        error_code,
+        message,
+        os.path.abspath(os.fspath(target)),
+    )
+
+
+def _commit_existing_windows(
+    target,
+    temporary,
+    target_stat,
+    original_bytes,
+    expected_replacement_stat=None,
+    expected_replacement_bytes=None,
+):
+    """Own TEMPORARY and recover every documented ReplaceFileW partial state."""
+
+    try:
+        if (
+            expected_replacement_stat is not None
+            and expected_replacement_bytes is not None
+        ):
+            temporary_stat = _verified_replacement_snapshot(
+                temporary,
+                expected_replacement_stat,
+                expected_replacement_bytes,
+            )
+            replacement_bytes = expected_replacement_bytes
+        else:
+            # State-machine unit fixtures call this helper directly on all
+            # platforms. Production always supplies the creation fingerprint.
+            temporary_stat, replacement_bytes = _read_regular_file_snapshot(
+                temporary,
+            )
+            if temporary_stat is None:
+                raise MergeError(
+                    "Windows replacement temporary disappeared"
+                )
+    except BaseException as temporary_error:
+        raise _windows_commit_state_error(
+            "Windows replacement temporary could not be verified before commit",
+            committed=False,
+            recovered=True,
+            paths=(temporary,),
+        ) from temporary_error
+
+    backup = None
+    placeholder_stat = None
+    try:
+        backup, placeholder_stat = _open_windows_backup_placeholder(target)
+    except BaseException as setup_error:
+        try:
+            _unlink_owned_path(temporary, temporary_stat)
+        except BaseException:
+            setup_artifacts = (
+                setup_error.artifacts
+                if isinstance(setup_error, AtomicCommitError)
+                else ()
+            )
+            raise _windows_commit_state_error(
+                "Windows commit setup failed and temporary cleanup was unsafe",
+                committed=False,
+                recovered=True,
+                paths=tuple(setup_artifacts) + (temporary,),
+            ) from setup_error
+        raise
+
+    native_failure = None
+    try:
+        error_code = _replace_file_windows_raw(target, temporary, backup)
+    except BaseException as error:
+        # A mock or loader failure is reconciled exactly like an unknown
+        # Win32 result. This also reconciles an interrupt delivered just after
+        # the native call returned from a partial name transition.
+        native_failure = error
+        error_code = None
+
+    if error_code == 0:
+        # Success should move the replacement object to TARGET and the old
+        # target object to BACKUP. Verify both transitions before deleting the
+        # only recovery copy.
+        if not _path_matches_expected(
+            target,
+            temporary_stat,
+            replacement_bytes,
+        ):
+            raise _windows_commit_state_error(
+                "Windows replacement reported success but the committed "
+                "target could not be verified",
+                committed=True,
+                recovered=False,
+                paths=(backup, temporary),
+            )
+        if not _path_matches_expected(backup, target_stat, original_bytes):
+            raise _windows_commit_state_error(
+                "Windows replacement committed but its recovery backup "
+                "could not be verified",
+                committed=True,
+                recovered=False,
+                paths=(backup,),
+            )
+        try:
+            _unlink_owned_path(backup, target_stat)
+        except BaseException:
+            raise _windows_commit_state_error(
+                "Windows replacement committed but its recovery backup "
+                "could not be removed",
+                committed=True,
+                recovered=False,
+                paths=(backup,),
+            )
+        return
+
+    original_at_target = _path_matches_expected(
+        target,
+        target_stat,
+        original_bytes,
+    )
+    original_at_backup = _path_matches_expected(
+        backup,
+        target_stat,
+        original_bytes,
+    )
+    replacement_at_target = _path_matches_expected(
+        target,
+        temporary_stat,
+        replacement_bytes,
+    )
+
+    if replacement_at_target:
+        # The raw API reported failure, but this invocation's exact temporary
+        # object and bytes are now installed. Preserve every recovery artifact
+        # and report the observed commit instead of calling it a rollback.
+        raise _windows_commit_state_error(
+            "Windows replacement reported failure after the replacement "
+            "was observably committed",
+            committed=True,
+            recovered=False,
+            paths=(backup, temporary),
+        )
+
+    restore_interruption = None
+    if original_at_backup:
+        # ERROR_UNABLE_TO_MOVE_REPLACEMENT_2 (1177) documents this state.
+        # Restore with no replace; a concurrently created target wins and both
+        # owned recovery files are retained for explicit manual resolution.
+        try:
+            target_missing = _inspect_target(target) is None
+        except BaseException as inspect_error:
+            raise _windows_commit_state_error(
+                "Windows replacement failed with the original in backup, "
+                "but the target path could not be inspected safely",
+                committed=None,
+                recovered=False,
+                paths=(target, backup, temporary),
+            ) from inspect_error
+        if target_missing:
+            try:
+                move_error = _move_file_windows_no_replace_raw(backup, target)
+            except BaseException as restore_error:
+                if _path_matches_expected(
+                    target,
+                    target_stat,
+                    original_bytes,
+                ):
+                    original_at_target = True
+                    restore_interruption = restore_error
+                    move_error = None
+                else:
+                    try:
+                        target_missing = _inspect_target(target) is None
+                    except (MergeError, OSError):
+                        target_missing = False
+                    if target_missing and _path_matches_expected(
+                        backup,
+                        target_stat,
+                        original_bytes,
+                    ):
+                        raise _windows_commit_state_error(
+                            "Windows replacement rollback was interrupted "
+                            "before the original backup was restored",
+                            committed=False,
+                            recovered=False,
+                            paths=(backup, temporary),
+                        ) from restore_error
+                    raise _windows_commit_state_error(
+                        "Windows replacement rollback was interrupted and "
+                        "its state is ambiguous",
+                        committed=None,
+                        recovered=False,
+                        paths=(target, backup, temporary),
+                    ) from restore_error
+            if move_error:
+                raise _windows_commit_state_error(
+                    "Windows replacement failed and the original backup "
+                    "could not be restored without replacement",
+                    committed=False,
+                    recovered=False,
+                    paths=(backup, temporary),
+                )
+            original_at_target = _path_matches_expected(
+                target,
+                target_stat,
+                original_bytes,
+            )
+            if not original_at_target:
+                raise _windows_commit_state_error(
+                    "Windows replacement rollback completed but the restored "
+                    "target could not be verified",
+                    committed=False,
+                    recovered=False,
+                    paths=(target, backup, temporary),
+                )
+        else:
+            raise _windows_commit_state_error(
+                "Windows replacement failed after another target appeared; "
+                "original backup was retained",
+                committed=False,
+                recovered=False,
+                paths=(backup, temporary),
+            )
+
+    if original_at_target:
+        # 1175/1176 and ordinary failures retain the original names when a
+        # backup was supplied. Delete only objects whose identity is ours.
+        try:
+            _unlink_owned_path(temporary, temporary_stat)
+            if backup is not None:
+                _unlink_owned_path(backup, placeholder_stat)
+        except BaseException:
+            raise _windows_commit_state_error(
+                "Windows replacement failed; original was recovered but "
+                "artifact cleanup was unsafe",
+                committed=False,
+                recovered=True,
+                paths=(backup, temporary),
+            )
+        if native_failure is not None:
+            raise native_failure
+        if restore_interruption is not None:
+            raise AtomicCommitError(
+                "Windows replacement rollback was interrupted after the "
+                "original target was observably restored",
+                committed=False,
+                recovered=True,
+                artifacts=(),
+            ) from restore_interruption
+        _raise_windows_api_error(error_code, target)
+
+    raise _windows_commit_state_error(
+        "Windows replacement failed and the original target state is ambiguous",
+        committed=None,
+        recovered=False,
+        paths=(backup, temporary),
+    )
+
+
+def _commit_new_posix(
+    target,
+    temporary,
+    expected_stat,
+    expected_bytes,
+):
+    """Install a missing POSIX target and own post-link cleanup state."""
+
+    try:
+        temporary_stat = _verified_replacement_snapshot(
+            temporary,
+            expected_stat,
+            expected_bytes,
+        )
+    except BaseException as verification_error:
+        raise AtomicCommitError(
+            "POSIX no-replace temporary could not be verified",
+            committed=False,
+            recovered=True,
+            artifacts=_existing_artifacts((temporary,)),
+        ) from verification_error
+
+    link_interruption = None
+    try:
+        # link(2) is an atomic no-replace commit on one filesystem.
+        os.link(temporary, target, follow_symlinks=False)
+    except BaseException as link_error:
+        # Python can deliver KeyboardInterrupt just after link(2) succeeded.
+        # Reconcile by identity before deciding this was a pre-commit failure.
+        if _path_matches_expected(
+            target,
+            temporary_stat,
+            expected_bytes,
+            allow_multiple_links=True,
+        ):
+            link_interruption = link_error
+        else:
+            try:
+                _unlink_owned_path(temporary, temporary_stat)
+            except BaseException:
+                raise AtomicCommitError(
+                    "POSIX no-replace commit failed and temporary cleanup "
+                    "was unsafe",
+                    committed=False,
+                    recovered=True,
+                    artifacts=_existing_artifacts((temporary,)),
+                ) from link_error
+            raise
+
+    if not _path_matches_expected(
+        target,
+        temporary_stat,
+        expected_bytes,
+        allow_multiple_links=True,
+    ):
+        raise AtomicCommitError(
+            "POSIX target was linked but could not be verified",
+            committed=True,
+            recovered=False,
+            artifacts=_existing_artifacts((temporary,)),
+        )
+
+    try:
+        # Removing the private name leaves the committed target as the only
+        # ordinary link. A persistent failure is a committed partial state,
+        # not an ordinary pre-commit error.
+        _unlink_owned_path(temporary, temporary_stat)
+    except BaseException as cleanup_error:
+        raise AtomicCommitError(
+            "POSIX target was committed but its temporary hard link could "
+            "not be removed",
+            committed=True,
+            recovered=False,
+            artifacts=_existing_artifacts((temporary,)),
+        ) from cleanup_error
+
+    if not _path_matches_expected(target, temporary_stat, expected_bytes):
+        raise AtomicCommitError(
+            "POSIX target was committed but its final identity could not "
+            "be verified",
+            committed=True,
+            recovered=False,
+            artifacts=(),
+        )
+    if link_interruption is not None:
+        raise AtomicCommitError(
+            "POSIX no-replace link raised after the target was observably "
+            "committed",
+            committed=True,
+            recovered=False,
+            artifacts=(),
+        ) from link_interruption
+
+
+def _commit_existing_posix(
+    target,
+    temporary,
+    target_stat,
+    original_bytes,
+    expected_stat,
+    expected_bytes,
+):
+    """Replace one POSIX target and reconcile exceptions around rename."""
+
+    try:
+        current_stat = _verified_replacement_snapshot(
+            temporary,
+            expected_stat,
+            expected_bytes,
+        )
+    except BaseException as verification_error:
+        raise AtomicCommitError(
+            "POSIX replacement temporary could not be verified",
+            committed=False,
+            recovered=True,
+            artifacts=_existing_artifacts((temporary,)),
+        ) from verification_error
+
+    try:
+        os.replace(temporary, target)
+    except BaseException as replace_error:
+        if _path_matches_expected(target, current_stat, expected_bytes):
+            raise AtomicCommitError(
+                "POSIX replace raised after the replacement was observably "
+                "committed",
+                committed=True,
+                recovered=False,
+                artifacts=_existing_artifacts((temporary,)),
+            ) from replace_error
+        if _path_matches_expected(target, target_stat, original_bytes):
+            try:
+                _unlink_owned_path(temporary, current_stat)
+            except BaseException:
+                raise AtomicCommitError(
+                    "POSIX replace failed; original was recovered but "
+                    "temporary cleanup was unsafe",
+                    committed=False,
+                    recovered=True,
+                    artifacts=_existing_artifacts((temporary,)),
+                ) from replace_error
+            raise
+        raise AtomicCommitError(
+            "POSIX replace failed and the target state is ambiguous",
+            committed=None,
+            recovered=False,
+            artifacts=_existing_artifacts((temporary,)),
+        ) from replace_error
+
+    if not _path_matches_expected(target, current_stat, expected_bytes):
+        raise AtomicCommitError(
+            "POSIX replace succeeded but the committed target could not "
+            "be verified",
+            committed=True,
+            recovered=False,
+            artifacts=_existing_artifacts((temporary,)),
+        )
+
+
+def _commit_temporary(
+    target,
+    temporary,
+    target_stat,
+    original_bytes,
+    expected_replacement_stat,
+    expected_replacement_bytes,
+):
+    """Install TEMPORARY while preserving platform security metadata."""
+
+    if target_stat is None:
+        if os.name == "nt":
+            _move_new_windows_file(
+                target,
+                temporary,
+                expected_replacement_stat,
+                expected_replacement_bytes,
+            )
+        else:
+            _commit_new_posix(
+                target,
+                temporary,
+                expected_replacement_stat,
+                expected_replacement_bytes,
+            )
+        return
+    if os.name != "nt":
+        _commit_existing_posix(
+            target,
+            temporary,
+            target_stat,
+            original_bytes,
+            expected_replacement_stat,
+            expected_replacement_bytes,
+        )
+        return
+
+    # ReplaceFileW carries forward the documented DACL, attributes, and named
+    # streams. A private backup makes 1176/1177 partial failures recoverable.
+    _commit_existing_windows(
+        target,
+        temporary,
+        target_stat,
+        original_bytes,
+        expected_replacement_stat,
+        expected_replacement_bytes,
+    )
+
+
+def _atomic_write(target, data, target_stat, original_bytes):
+    """Write DATA completely, then atomically replace TARGET."""
+
+    descriptor = None
+    temporary = None
+    temporary_identity = None
+    written_stat = None
+    operation_error = None
+    operation_traceback = None
+    try:
+        descriptor, temporary = _open_atomic_temporary(target)
+        try:
+            temporary_identity = os.fstat(descriptor)
+        except BaseException as identity_error:
+            # The exclusive name already exists, but without a handle-derived
+            # identity a path unlink would be unsafe. Retain and report it.
+            raise AtomicCommitError(
+                "atomic temporary identity could not be recorded",
+                committed=False,
+                recovered=True,
+                artifacts=_existing_artifacts((temporary,)),
+            ) from identity_error
+        stream = os.fdopen(descriptor, "wb")
+        descriptor = None
+        with stream:
+            stream.write(data)
+            stream.flush()
+            if target_stat is not None and os.name != "nt":
+                _copy_posix_metadata(target, stream.fileno(), target_stat)
+            os.fsync(stream.fileno())
+            written_stat = os.fstat(stream.fileno())
+
+        # Recheck both identity/version metadata and bytes after the temporary
+        # file is durable. Existing-path replace APIs are not compare-and-swap:
+        # this detects changes visible before the check, while callers needing
+        # a strict lost-update guarantee must serialize every writer.
+        _assert_target_unchanged(target, target_stat, original_bytes)
+        # Every commit primitive can cross an observable name-transition
+        # boundary. Transfer ownership before entering the platform helper so
+        # outer cleanup can never erase a recovery artifact after an exception.
+        commit_temporary = temporary
+        temporary = None
+        _commit_temporary(
+            target,
+            commit_temporary,
+            target_stat,
+            original_bytes,
+            written_stat,
+            data,
+        )
+    except BaseException as error:
+        # Delay propagation until every still-owned precommit resource has had
+        # one bounded cleanup attempt. Cleanup failures must not replace the
+        # primary operation error with an unstructured exception.
+        operation_error = error
+        operation_traceback = error.__traceback__
+
+    cleanup_errors = []
+    if descriptor is not None:
+        try:
+            os.close(descriptor)
+        except BaseException as close_error:
+            cleanup_errors.append(close_error)
+    if temporary is not None and temporary_identity is not None:
+        try:
+            _unlink_owned_path(temporary, temporary_identity)
+        except FileNotFoundError:
+            pass
+        except BaseException as unlink_error:
+            cleanup_errors.append(unlink_error)
+
+    if cleanup_errors:
+        cleanup_state_error = AtomicCommitError(
+            "atomic write failed before commit and precommit cleanup was unsafe",
+            committed=False,
+            recovered=True,
+            artifacts=_owned_artifacts(
+                ((temporary, temporary_identity),)
+            ),
+        )
+        if operation_error is not None:
+            raise cleanup_state_error from operation_error
+        raise cleanup_state_error from cleanup_errors[0]
+    if operation_error is not None:
+        raise operation_error.with_traceback(operation_traceback)
+
+
 def merge_file(target, block, write=True):
     """Merge BLOCK file into TARGET file. Returns ``(changed, action)``.
 
@@ -253,15 +1974,26 @@ def merge_file(target, block, write=True):
     normalized), or 'unchanged'. The target's line-ending style and UTF-8
     BOM are preserved so that a second run is byte-identical. A file that
     mixes CRLF and LF is treated as CRLF (any CRLF present selects CRLF)
-    and is stable from the second run on.
+    and is stable from the second run on. Writes use a flushed same-directory
+    temporary file and one atomic replace. Windows carries forward documented
+    DACL/attribute/stream metadata; POSIX preserves bounded owner/group/mode/
+    extended-attribute metadata. Target and block are read as no-follow
+    ordinary-file snapshots. The pre-commit conflict recheck is best-effort
+    rather than compare-and-swap; serialize writers externally for strict
+    lost-update prevention.
     """
-    raw = target.read_bytes() if target.exists() else b""
+    target_stat, raw = _read_regular_file_snapshot(target, missing_ok=True)
     has_bom = raw.startswith(_BOM)
     text = _decode(raw, "target")
     eol = "\r\n" if "\r\n" in text else "\n"
     normalized = text.replace("\r\n", "\n")
 
-    block_text = _decode(block.read_bytes(), "block").replace("\r\n", "\n")
+    _block_stat, block_bytes = _read_regular_file_snapshot(
+        block,
+        require_effective_owner=False,
+        reject_encrypted=False,
+    )
+    block_text = _decode(block_bytes, "block").replace("\r\n", "\n")
 
     merged, action = merge(normalized, block_text)
     out = merged if eol == "\n" else merged.replace("\n", eol)
@@ -273,7 +2005,7 @@ def merge_file(target, block, write=True):
         if action == "unchanged":
             action = "normalized"
         if write:
-            target.write_bytes(out_bytes)
+            _atomic_write(target, out_bytes, target_stat, raw)
     return changed, action
 
 
@@ -296,6 +2028,26 @@ def main(argv=None):
 
     try:
         changed, action = merge_file(args.target, args.block, write=not args.check)
+    except AtomicCommitError as error:
+        committed = {
+            True: "true",
+            False: "false",
+            None: "unknown",
+        }[error.committed]
+        print("error: %s" % error, file=sys.stderr)
+        print(
+            "commit-state: committed=%s recovered=%s"
+            % (committed, str(bool(error.recovered)).lower()),
+            file=sys.stderr,
+        )
+        # ascii() keeps control/bidi/non-ASCII path text from becoming active
+        # terminal formatting while still identifying every retained path.
+        for artifact in error.artifacts:
+            print(
+                "recovery-artifact: %s" % ascii(os.fspath(artifact)),
+                file=sys.stderr,
+            )
+        return 2
     except (MergeError, OSError, UnicodeDecodeError) as error:
         print("error: %s" % error, file=sys.stderr)
         return 2
