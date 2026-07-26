@@ -555,9 +555,19 @@ if ($null -ne $gitExe) {
     New-Item -ItemType Directory -Path $gitIsolationRoot | Out-Null
     $gitScanStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     try {
+        # Ask Git whether -C is inside a worktree and for the path from that
+        # worktree root to -C. Exact "true" plus a blank prefix proves that the
+        # caller supplied the repository root without comparing lexical aliases
+        # such as macOS /var/... and /private/var/....
         $topLevelResult = Invoke-ScannerGitProcess `
             -FileName $gitExe.Source `
-            -Arguments @('-C', $root, 'rev-parse', '--show-toplevel') `
+            -Arguments @(
+                '-C',
+                $root,
+                'rev-parse',
+                '--is-inside-work-tree',
+                '--show-prefix'
+            ) `
             -IsolationRoot $gitIsolationRoot `
             -WorkingDirectory $root `
             -MaxStdoutBytes 65536
@@ -569,26 +579,33 @@ if ($null -ne $gitExe) {
             $usingGitIndex = $true
             $strictUtf8 = [System.Text.UTF8Encoding]::new($false, $true)
             try {
-                $topLevelText = $strictUtf8.GetString(
+                $topLevelRecordsText = $strictUtf8.GetString(
                     $topLevelResult.StdoutBytes
-                ).TrimEnd([char[]]@([char]13, [char]10))
+                )
             }
             catch {
                 Stop-ScanIntegrityFailure -Reason 'git-top-level-encoding'
             }
-            if ([string]::IsNullOrWhiteSpace($topLevelText)) {
-                Stop-ScanIntegrityFailure -Reason 'git-top-level-empty'
-            }
-            if ($topLevelText.IndexOfAny([char[]]@([char]0, [char]13, [char]10)) -ge 0) {
+            $topLevelRecordsMatch = [regex]::Match(
+                $topLevelRecordsText,
+                '\A([^\r\n]*)\r?\n([^\r\n]*)\r?\n\z',
+                [Text.RegularExpressions.RegexOptions]::CultureInvariant
+            )
+            if (-not $topLevelRecordsMatch.Success -or
+                $topLevelRecordsText.IndexOf([char]0) -ge 0) {
                 Stop-ScanIntegrityFailure -Reason 'git-top-level-record'
             }
-            try {
-                $resolvedTopLevel = (Resolve-Path -LiteralPath $topLevelText).Path
+            $insideWorktreeText = $topLevelRecordsMatch.Groups[1].Value
+            $topLevelPrefix = $topLevelRecordsMatch.Groups[2].Value
+            if ([string]::IsNullOrWhiteSpace($insideWorktreeText)) {
+                Stop-ScanIntegrityFailure -Reason 'git-top-level-empty'
             }
-            catch {
-                Stop-ScanIntegrityFailure -Reason 'git-top-level-missing'
-            }
-            if (-not [string]::Equals($root, $resolvedTopLevel, $pathComparison)) {
+            if (-not [string]::Equals(
+                    $insideWorktreeText,
+                    'true',
+                    [StringComparison]::Ordinal
+                ) -or
+                $topLevelPrefix.Length -ne 0) {
                 Stop-ScanIntegrityFailure -Reason 'git-root-mismatch'
             }
 
