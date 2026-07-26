@@ -314,6 +314,11 @@ the scanner back into the trap, these tests fail first.
   Closing-hash headings (`## X ##`) do act as headings and boundaries, but
   matching is by exact line — `## X ##` and `## X` are different headings
   here, so keep the managed heading in plain form.
+- A matching H2 indented by 1–3 ASCII spaces outside literal regions is an
+  ambiguous managed-heading identity. Merge and `--check` both refuse it
+  without writing; the reference never auto-reindents possible list/container
+  content. See
+  [`docs/indented-managed-heading-contract.md`](docs/indented-managed-heading-contract.md).
 - Setext headings (`Heading` + `===`/`---` underline) are never boundaries;
   when one may sit inside the replaced span the reference refuses to merge
   (invariant 6) rather than delete it silently. Convert setext headings to

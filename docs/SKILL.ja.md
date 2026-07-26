@@ -296,6 +296,10 @@ python scripts/test_merge_section.py
   形式（`## X ##`）も見出し・境界としては機能しますが、マッチングは行の
   完全一致 — `## X ##` と `## X` はここでは別の見出しです。管理対象の
   見出しは素の形式に保ってください。
+- literal region 外で同名 H2 に1〜3個の ASCII spaceが付いている場合は、
+  管理対象見出しの同一性が曖昧なため、通常実行と `--check` の双方をno-writeで
+  拒否します。list/containerかもしれない内容を自動reindentしません。詳細は
+  [`indented-managed-heading-contract.md`](indented-managed-heading-contract.md)。
 - Setext 見出し（`見出し` + `===`/`---` の下線）は境界になりません。
   置換スパン内にある疑いがあるときは、静かに消す代わりにマージを拒否
   します（不変条件6）。setext 見出しは ATX 形式に変換するか、固定マーカー

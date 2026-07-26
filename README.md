@@ -313,6 +313,11 @@ frontmatter・fence・CommonMark HTML type 1〜7 を排他的に走査します�
 - The managed heading must be a plain `## Name` at column 0 (closing-hash
   headings work as boundaries but match by exact line, so `## X ##` and
   `## X` are different headings).
+- A matching managed H2 indented by 1–3 ASCII spaces outside literal regions
+  is treated as an ambiguous identity and makes both merge and `--check`
+  refuse without writing. The tool does not auto-reindent possible list or
+  container content. See
+  [`docs/indented-managed-heading-contract.md`](docs/indented-managed-heading-contract.md).
 - Setext headings are never boundaries; a possible setext heading inside
   the replaced span makes the merge refuse instead of deleting it.
 - Frontmatter recognition is intentionally narrow: only exact column-0

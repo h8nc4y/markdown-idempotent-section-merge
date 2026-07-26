@@ -215,6 +215,83 @@ class BlockValidationTests(unittest.TestCase):
         self.assertNotIn("## Notes  ", merged)
 
 
+class IndentedManagedHeadingIdentityTests(unittest.TestCase):
+    """管理対象 H2 の1〜3 space variantを安全側へ畳み込む契約。"""
+
+    block = "## Managed\n\nCanonical body.\n"
+    error = "indented managed H2 outside literal regions"
+
+    def test_one_to_three_space_candidates_fail_closed(self):
+        for width in (1, 2, 3):
+            with self.subTest(width=width):
+                trailing = " \t" if width == 3 else ""
+                original = "%s## Managed%s\n\nOld body.\n" % (
+                    " " * width,
+                    trailing,
+                )
+                with self.assertRaisesRegex(merge_section.MergeError, self.error):
+                    merge_section.merge(original, self.block)
+
+    def test_fixed_error_does_not_reflect_managed_heading(self):
+        marker = "SYNTHETIC-HEADING-MARKER"
+        with self.assertRaises(merge_section.MergeError) as caught:
+            merge_section.merge(
+                "  ## %s\n" % marker,
+                "## %s\n\nCanonical body.\n" % marker,
+            )
+        self.assertIn(self.error, str(caught.exception))
+        self.assertNotIn(marker, str(caught.exception))
+
+    def test_canonical_plus_indented_and_multiple_variants_fail_closed(self):
+        documents = {
+            "canonical-plus-indented": (
+                "## Managed\n\nOld canonical.\n\n"
+                "  ## Managed\n\nOld ambiguous copy.\n"
+            ),
+            "multiple-indented": (
+                " ## Managed\n\nFirst.\n\n"
+                "   ## Managed\n\nSecond.\n"
+            ),
+            "list-container-ambiguous": (
+                "- Synthetic item\n"
+                "  ## Managed\n\n"
+                "Nested-looking body.\n"
+            ),
+        }
+        for label, original in documents.items():
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(merge_section.MergeError, self.error):
+                    merge_section.merge(original, self.block)
+
+    def test_four_spaces_tab_and_closing_hash_are_not_same_identity(self):
+        lines = (
+            "    ## Managed\n"
+            "\t## Managed\n"
+            "## Managed ##\n"
+        )
+        merged, action = merge_section.merge(lines, self.block)
+        self.assertEqual(action, "appended")
+        self.assertTrue(merged.startswith(lines))
+        self.assertEqual(h2_count(merged, "## Managed"), 1)
+
+    def test_indented_literal_region_lines_are_not_candidates(self):
+        document = (
+            "---\n"
+            "example: |\n"
+            "   ## Managed\n"
+            "---\n\n"
+            "```text\n"
+            " ## Managed\n"
+            "```\n\n"
+            "<!--\n"
+            "  ## Managed\n"
+            "-->\n"
+        )
+        merged, action = merge_section.merge(document, self.block)
+        self.assertEqual(action, "appended")
+        self.assertEqual(h2_count(merged, "## Managed"), 1)
+
+
 class BoundaryHardeningTests(unittest.TestCase):
     """Boundary rules beyond the folk ``^##[^#]`` form, each measured."""
 
@@ -2568,6 +2645,30 @@ class FileLevelTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 2)
                 self.assertIn(
                     "unclosed raw HTML block type 2",
+                    result.stderr,
+                )
+                self.assertEqual(target.read_bytes(), original)
+
+    def test_cli_rejects_indented_managed_h2_without_writing(self):
+        original = (
+            b"- Synthetic item\n"
+            b"  ## Managed\n\n"
+            b"Nested-looking body.\n"
+        )
+        target = self._write("target.md", original)
+        block = self._write(
+            "section.md", b"## Managed\n\nCanonical body.\n"
+        )
+
+        # 通常実行とdry-runを同じvalidation境界へ通し、部分的なcontainer
+        # 解釈や自動reindentを行わず、元bytesを完全に維持する。
+        for check_arg in ((), ("--check",)):
+            with self.subTest(check=bool(check_arg)):
+                target.write_bytes(original)
+                result = self._run_cli(str(target), str(block), *check_arg)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(
+                    "indented managed H2 outside literal regions",
                     result.stderr,
                 )
                 self.assertEqual(target.read_bytes(), original)
