@@ -83,6 +83,11 @@ Keep the template fenced so it does not become a real heading.
 - 閉じるのは「**同じ文字**が**開いたとき以上の長さ**で連なり、他に何もない」
   行だけ。閉じられなかったフェンスは文書末尾まで続く（CommonMark の挙動）。
 - フェンス内では、いかなる行も見出しにも境界にもならない。
+- フェンス走査の前に、文書先頭の完全一致 frontmatter を除外する。YAML は
+  `---` で始まり、完全一致 `---` または `...` で閉じる。TOML は完全一致
+  `+++` で始まり `+++` で閉じる。その中の見出し風の行は metadata/comment
+  であって Markdown 節境界ではない。対応 closer が無い opener は書込み前に
+  fail closed にする。
 - 節の境界は次の**レベル1または2**の見出し。素朴形は `^##[^#]`
   （`###` を除外）で、参照実装はこれを `^ {0,3}#{1,2}([ \t]|$)` に強化
   している: H1 も境界として扱い（部の境界を置換に巻き込んで消しては
@@ -145,6 +150,10 @@ begin/end マーカー行（完全一致）の間を丸ごと置換し、begin �
    `---` 下線は、行単位の `^#` 走査では境界として見えない本物の見出し。
    それをまたいで置換すると節の境界がエラーなしに消える — 停止して報告
    する（見出しを ATX 形式に変換するか、固定マーカーに切り替える）。
+7. **文書先頭の frontmatter を未クローズのまま許さない。** 先頭行が完全一致
+   `---`（YAML）または `+++`（TOML）なら、最初の完全一致 closer までだけを
+   見出し走査から除外する。closer が無ければ metadata と通常 Markdown の
+   thematic break のどちらかを推測せず停止する。
 
 ## 検証レシピ
 
@@ -222,10 +231,13 @@ python scripts/merge_section.py TARGET.md SECTION.md --check   # ドリフト検
 `SECTION.md` が正本ブロックです: 1行目が正確な `## 見出し`。ターゲットの
 LF/CRLF スタイルと UTF-8 BOM は保持され、ターゲットが無ければ作成されます
 （空文書への追記）。壊れた入力 — ターゲット内の見出し重複・ブロック内の
-余分な見出し・どちらか一方でも未クローズのフェンス・CR のみの改行・
-スパン内の setext 見出しの疑い — は推測で処理せず終了コード 2 で停止
-します。改行の混在を正規化しただけのときは `normalized` /
-`would-normalize` と正直に報告し、「unchanged」とは言いません。
+余分な見出し・どちらか一方でも未クローズのフェンス・文書先頭の未クローズ
+YAML/TOML frontmatter・CR のみの改行・スパン内の setext 見出しの疑い —
+は推測で処理せず終了コード 2 で停止します。完全一致の文書先頭 YAML
+（`---` から `---` / `...`）と TOML（`+++` から `+++`）は見出し・
+フェンス状態走査から除外するため、metadata comment を置換起点にしません。
+改行の混在を正規化しただけのときは `normalized` / `would-normalize` と
+正直に報告し、「unchanged」とは言いません。
 
 [`tests/fixtures/`](../tests/fixtures) は1ケース1フォルダで、それぞれ
 `input.md`・`section.md`・`expected.md` を持ちます:
@@ -233,6 +245,7 @@ LF/CRLF スタイルと UTF-8 BOM は保持され、ターゲットが無けれ�
 | Fixture | 証明すること |
 | --- | --- |
 | `trap-heading-inside-fence` | フェンス内の `## ...` リテラルが範囲を終わらせない |
+| `frontmatter-heading-literal` | 文書先頭 YAML 内の疑似見出しを置換起点にしない |
 | `append-missing-section` | 無い節はセパレータ空行1個つきで追記される |
 | `replace-existing-section` | 既存の節はその場で置換される |
 | `subheading-boundary` | `###` は節内に留まり、範囲は次の本物の `##` で終わる |
@@ -262,6 +275,11 @@ python scripts/test_merge_section.py
   置換スパン内にある疑いがあるときは、静かに消す代わりにマージを拒否
   します（不変条件6）。setext 見出しは ATX 形式に変換するか、固定マーカー
   方式に切り替えてください。
+- frontmatter として認識するのは文書先頭・列0・完全一致だけです。YAML は
+  `---` と `---` / `...`、TOML は `+++` と `+++` の組だけ。末尾に空白や
+  文字がある delimiter、文書途中、他の metadata 形式は通常 Markdown として
+  扱います。認識した opener に完全一致 closer が無ければ拒否します
+  （不変条件7）。
 - フェンス処理は CommonMark のコア規則の範囲（列0〜3のバッククォート/
   チルダフェンス、backtick を含む info string の除外を含む）。特殊ケース
   （blockquote 内や深いリストインデント内のフェンス）は参照実装のスコープ

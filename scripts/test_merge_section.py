@@ -6,7 +6,7 @@
 Per fixture under tests/fixtures/ it verifies that the merged output equals
 expected.md byte-for-byte, that applying the same merge twice is a no-op
 (apply-twice-diff-zero), and that the section heading occurs exactly once
-outside code fences afterwards.
+outside leading frontmatter and code fences afterwards.
 
 It also proves the skill's trap is real, not hypothetical: a fence-blind
 ``^##`` implementation (kept here as ``fence_blind_merge``) corrupts the
@@ -52,7 +52,7 @@ def load(fixture, name):
 
 
 def h2_count(text, heading):
-    """Fence-aware count of lines equal to HEADING outside code fences."""
+    """Count HEADING outside leading frontmatter and code fences."""
     lines = text.split("\n")
     return len(merge_section.heading_occurrences(lines, heading))
 
@@ -91,6 +91,7 @@ class FixtureMergeTests(unittest.TestCase):
     def test_fixture_discovery_found_the_known_cases(self):
         for name in (
             "append-missing-section",
+            "frontmatter-heading-literal",
             "h1-boundary",
             "replace-existing-section",
             "subheading-boundary",
@@ -215,6 +216,159 @@ class BlockValidationTests(unittest.TestCase):
 
 class BoundaryHardeningTests(unittest.TestCase):
     """Boundary rules beyond the folk ``^##[^#]`` form, each measured."""
+
+    def test_yaml_frontmatter_heading_literals_are_ignored(self):
+        for closer in ("---", "..."):
+            with self.subTest(closer=closer):
+                document = (
+                    "---\n"
+                    "title: Synthetic guide\n"
+                    "\n"
+                    "example: |\n"
+                    "  ```text\n"
+                    "## Managed\n"
+                    "owner: example\n"
+                    f"{closer}\n"
+                    "\n"
+                    "# Document\n"
+                    "\n"
+                    "Intro.\n"
+                )
+                block = "## Managed\n\nCanonical body.\n"
+
+                # frontmatter 内の疑似 H2 は置換対象ではない。正本節は文書末尾へ
+                # 追記し、2回目は同じ bytes に収束しなければならない。
+                merged, action = merge_section.merge(document, block)
+                self.assertEqual(action, "appended")
+                self.assertTrue(merged.startswith(document))
+                self.assertIn("owner: example\n" + closer, merged)
+                twice, second_action = merge_section.merge(merged, block)
+                self.assertEqual(twice, merged)
+                self.assertEqual(second_action, "unchanged")
+                self.assertEqual(h2_count(merged, "## Managed"), 1)
+
+    def test_toml_frontmatter_heading_literal_is_ignored(self):
+        document = (
+            "+++\n"
+            'title = "Synthetic guide"\n'
+            "## Managed\n"
+            'owner = "example"\n'
+            "+++\n"
+            "\n"
+            "# Document\n"
+            "\n"
+            "Intro.\n"
+        )
+        block = "## Managed\n\nCanonical body.\n"
+
+        merged, action = merge_section.merge(document, block)
+        self.assertEqual(action, "appended")
+        self.assertTrue(merged.startswith(document))
+        self.assertIn('owner = "example"\n+++', merged)
+        twice, second_action = merge_section.merge(merged, block)
+        self.assertEqual(twice, merged)
+        self.assertEqual(second_action, "unchanged")
+
+    def test_frontmatter_after_closer_replaces_real_heading(self):
+        document = (
+            "---\n"
+            "title: Synthetic guide\n"
+            "## Managed\n"
+            "---\n"
+            "\n"
+            "# Document\n"
+            "\n"
+            "## Managed\n"
+            "\n"
+            "Old body.\n"
+            "\n"
+            "## Next\n"
+            "\n"
+            "Keep.\n"
+        )
+        merged, action = merge_section.merge(
+            document, "## Managed\n\nCanonical body.\n"
+        )
+        self.assertEqual(action, "replaced")
+        self.assertIn("title: Synthetic guide\n## Managed\n---", merged)
+        self.assertNotIn("Old body.", merged)
+        self.assertIn("## Next\n\nKeep.", merged)
+
+    def test_unclosed_frontmatter_is_rejected(self):
+        for opener in ("---", "+++"):
+            with self.subTest(opener=opener):
+                document = (
+                    f"{opener}\n"
+                    "title: Synthetic guide\n"
+                    "## Managed\n"
+                    "owner: example\n"
+                )
+                with self.assertRaisesRegex(
+                    merge_section.MergeError, "unclosed .*frontmatter"
+                ):
+                    merge_section.merge(
+                        document, "## Managed\n\nCanonical body.\n"
+                    )
+
+    def test_frontmatter_delimiters_require_exact_lines(self):
+        # 空白付き closer は別行として扱い、曖昧な frontmatter を静かに
+        # 置換しない。opener も完全一致でなければ通常 Markdown として扱う。
+        for opener, loose_closer, kind in (
+            ("---", "--- ", "YAML"),
+            ("+++", "+++ ", "TOML"),
+        ):
+            with self.subTest(kind=kind, delimiter="closer"):
+                with self.assertRaisesRegex(
+                    merge_section.MergeError,
+                    f"unclosed {kind} frontmatter",
+                ):
+                    merge_section.merge(
+                        f"{opener}\ntitle: Synthetic guide\n{loose_closer}\n"
+                        "# Document\n",
+                        "## Managed\n\nCanonical body.\n",
+                    )
+
+        document = (
+            "--- \n"
+            "\n"
+            "## Managed\n"
+            "\n"
+            "Old body.\n"
+            "\n"
+            "---\n"
+            "\n"
+            "# Next\n"
+            "\n"
+            "Keep.\n"
+        )
+        merged, action = merge_section.merge(
+            document, "## Managed\n\nCanonical body.\n"
+        )
+        self.assertEqual(action, "replaced")
+        self.assertTrue(merged.startswith("--- \n"))
+        self.assertIn("# Next\n\nKeep.", merged)
+
+    def test_nonleading_thematic_break_and_heading_boundaries_are_unchanged(self):
+        document = (
+            "# Document\n"
+            "\n"
+            "---\n"
+            "\n"
+            "## Managed\n"
+            "\n"
+            "Old body.\n"
+            "\n"
+            "# Next part\n"
+            "\n"
+            "Keep.\n"
+        )
+        merged, action = merge_section.merge(
+            document, "## Managed\n\nCanonical body.\n"
+        )
+        self.assertEqual(action, "replaced")
+        self.assertIn("# Document\n\n---\n", merged)
+        self.assertIn("# Next part\n\nKeep.", merged)
+        self.assertNotIn("Old body.", merged)
 
     def test_indented_h2_ends_the_section(self):
         doc = "## Notes\n\nold.\n\n  ## Indented\n\nindent body.\n\n## Next\n\nx.\n"
@@ -1751,6 +1905,36 @@ class FileLevelTests(unittest.TestCase):
         self.assertFalse(changed)
         self.assertEqual(action, "unchanged")
 
+    def test_frontmatter_merge_preserves_crlf_and_bom(self):
+        bom = b"\xef\xbb\xbf"
+        source = (
+            "---\n"
+            "title: Synthetic guide\n"
+            "## Managed\n"
+            "owner: example\n"
+            "---\n"
+            "\n"
+            "# Document\n"
+        )
+        target = self._write(
+            "target.md", bom + source.replace("\n", "\r\n").encode("utf-8")
+        )
+        block = self._write(
+            "section.md", b"## Managed\n\nCanonical body.\n"
+        )
+
+        changed, action = merge_section.merge_file(target, block)
+        self.assertTrue(changed)
+        self.assertEqual(action, "appended")
+        merged_bytes = target.read_bytes()
+        self.assertTrue(merged_bytes.startswith(bom))
+        self.assertNotIn(b"\n", merged_bytes.replace(b"\r\n", b""))
+        self.assertIn(b"owner: example\r\n---", merged_bytes)
+
+        changed, action = merge_section.merge_file(target, block)
+        self.assertFalse(changed)
+        self.assertEqual(action, "unchanged")
+
     def test_missing_target_is_created_by_append(self):
         fixture = "append-missing-section"
         target = self.dir / "new.md"
@@ -1861,6 +2045,20 @@ class FileLevelTests(unittest.TestCase):
         result = self._run_cli(str(target), str(block))
         self.assertEqual(result.returncode, 2)
         self.assertIn("exactly one", result.stderr)
+
+    def test_cli_rejects_unclosed_frontmatter_without_writing(self):
+        original = b"---\ntitle: Synthetic guide\n## Managed\nowner: example\n"
+        target = self._write("target.md", original)
+        block = self._write(
+            "section.md", b"## Managed\n\nCanonical body.\n"
+        )
+
+        for check_arg in ((), ("--check",)):
+            with self.subTest(check=bool(check_arg)):
+                result = self._run_cli(str(target), str(block), *check_arg)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("unclosed YAML frontmatter", result.stderr)
+                self.assertEqual(target.read_bytes(), original)
 
     def test_cli_reports_tri_state_and_every_recovery_artifact(self):
         target = self.dir / "target.md"

@@ -50,7 +50,9 @@ function Assert-FileContains {
         return
     }
 
-    $content = Get-Content -LiteralPath $filePath -Raw
+    # Windows PowerShell 5.1 の既定 ANSI 解釈に依存すると、BOM なし UTF-8 の
+    # 日本語契約が文字化けして false negative になる。明示 UTF-8 で読む。
+    $content = Get-Content -LiteralPath $filePath -Raw -Encoding UTF8
     if ($content -notmatch $Pattern) {
         Add-Failure "$RelativePath is missing: $Description"
     }
@@ -62,7 +64,7 @@ function Test-SkillFrontmatter {
         return
     }
 
-    $lines = Get-Content -LiteralPath $skillPath
+    $lines = Get-Content -LiteralPath $skillPath -Encoding UTF8
     if ($lines.Count -lt 4 -or $lines[0] -ne '---') {
         Add-Failure 'SKILL.md must start with YAML frontmatter.'
         return
@@ -95,6 +97,7 @@ function Test-SkillFrontmatter {
 
 $fixtureNames = @(
     'append-missing-section',
+    'frontmatter-heading-literal',
     'h1-boundary',
     'replace-existing-section',
     'subheading-boundary',
@@ -117,6 +120,7 @@ $requiredFiles = @(
     'SECURITY.md',
     'SKILL.md',
     'docs/SKILL.ja.md',
+    'docs/frontmatter-heading-scan-contract.md',
     'examples/before-after.md',
     'examples/verification-recipe.md',
     'docs/private-marker-scanner-hardening.md',
@@ -146,6 +150,9 @@ Assert-FileContains -RelativePath 'README.md' -Pattern 'CONTRIBUTING\.md' -Descr
 Assert-FileContains -RelativePath 'README.md' -Pattern 'SECURITY\.md' -Description 'link to SECURITY.md'
 Assert-FileContains -RelativePath 'README.md' -Pattern 'docs/SKILL\.ja\.md' -Description 'link to the Japanese skill version'
 Assert-FileContains -RelativePath 'README.md' -Pattern 'merge_section\.py' -Description 'reference implementation usage'
+Assert-FileContains -RelativePath 'SKILL.md' -Pattern '(?is)frontmatter.*YAML.*TOML.*fail' -Description 'frontmatter-aware fail-closed contract'
+Assert-FileContains -RelativePath 'docs/SKILL.ja.md' -Pattern '(?is)frontmatter.*YAML.*TOML.*fail' -Description 'Japanese frontmatter-aware fail-closed contract'
+Assert-FileContains -RelativePath 'docs/frontmatter-heading-scan-contract.md' -Pattern '(?is)YAML.*TOML.*完全一致.*fail closed' -Description 'frontmatter heading-scan design and test contract'
 Assert-FileContains -RelativePath '.gitignore' -Pattern '\.private-markers\.local' -Description 'ignore local private marker files'
 Assert-FileContains -RelativePath '.editorconfig' -Pattern '(?ms)^\[\*\.ps1\].*?^charset\s*=\s*utf-8-bom\s*$' -Description 'PowerShell UTF-8 BOM compatibility'
 Assert-FileContains -RelativePath 'CONTRIBUTING.md' -Pattern '(?im)no token|never.*token|secret' -Description 'secret-safe contribution guidance'

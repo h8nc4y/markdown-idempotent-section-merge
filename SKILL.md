@@ -97,6 +97,11 @@ or boundary when it is outside every fence:
   long*, with nothing else on the line. An unclosed fence runs to the end
   of the document (CommonMark behaviour).
 - While inside a fence, nothing is a heading and nothing is a boundary.
+- Before fence scanning, a leading exact-line frontmatter block is excluded:
+  YAML opens with `---` and closes with exact `---` or `...`; TOML opens and
+  closes with exact `+++`. A heading-looking line inside that block is
+  metadata/comment content, not a Markdown section boundary. An opener without
+  its exact closer fails closed before any write.
 - The section boundary is the next heading of level 1 **or** 2. The folk
   form is `^##[^#]` (exclude `###`); the reference hardens it to
   `^ {0,3}#{1,2}([ \t]|$)`, which additionally treats an H1 as a boundary
@@ -163,6 +168,10 @@ well defined:
    line-by-line `^#` scan cannot see as a boundary. Replacing across one
    would delete a section boundary without any error — stop and report
    instead (convert the heading to ATX form, or use fixed markers).
+7. **No unclosed leading frontmatter.** When the first line is exact `---`
+   (YAML) or `+++` (TOML), ignore its heading-looking lines only through the
+   first exact matching closer. If no closer exists, stop instead of guessing
+   whether the opener was metadata or an ordinary Markdown thematic break.
 
 ## Verification Recipe
 
@@ -233,8 +242,11 @@ state cannot prove either outcome. Cleanup checks identity immediately before
 unlink, but portable path-based unlink still has a final name-swap window;
 private unpredictable names and fail-closed artifact retention mitigate it.
 Malformed input — a duplicate heading in the target, an extra heading in the
-block, an unclosed fence in either, CR-only line endings, a possible setext
-heading inside the span — exits with code 2 instead of guessing. When only
+block, an unclosed fence in either, unclosed leading YAML/TOML frontmatter,
+CR-only line endings, a possible setext heading inside the span — exits with
+code 2 instead of guessing. Exact leading YAML (`---` through `---` or `...`)
+and TOML (`+++` through `+++`) frontmatter is excluded from heading and fence
+state scans, so metadata comments cannot become replacement anchors. When only
 mixed line endings need normalizing, the action is reported honestly as
 `normalized` / `would-normalize`, never as "unchanged".
 
@@ -244,6 +256,7 @@ case, each with `input.md`, `section.md`, and `expected.md`:
 | Fixture | Proves |
 | --- | --- |
 | `trap-heading-inside-fence` | Fenced `## ...` literals do not end the range |
+| `frontmatter-heading-literal` | Leading YAML metadata comments are not merge anchors |
 | `append-missing-section` | Absent section is appended with one separator line |
 | `replace-existing-section` | Present section is replaced in place |
 | `subheading-boundary` | `###` subheadings stay inside; range ends at the next real `##` |
@@ -275,6 +288,11 @@ the scanner back into the trap, these tests fail first.
   when one may sit inside the replaced span the reference refuses to merge
   (invariant 6) rather than delete it silently. Convert setext headings to
   ATX form, or switch to fixed markers.
+- Only a document-leading, column-0, exact-line frontmatter form is recognized:
+  YAML `---` with `---`/`...`, or TOML `+++` with `+++`. Delimiters with
+  trailing text/space, frontmatter later in a document, and other metadata
+  syntaxes are ordinary Markdown to this reference. A recognized opener with
+  no exact closer is refused (invariant 7).
 - Fence handling covers column 0–3 backtick/tilde fences per CommonMark's
   core rules, including the backtick-info-string exclusion; exotic cases
   (fences inside blockquotes or deep list indentation) are out of scope

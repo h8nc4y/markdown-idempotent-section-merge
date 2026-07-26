@@ -8,6 +8,11 @@ The format loosely follows Keep a Changelog conventions.
 
 ### Changed
 
+- Exclude exact document-leading YAML (`---` through `---`/`...`) and TOML
+  (`+++` through `+++`) frontmatter from heading/fence scans, so metadata
+  comments cannot be mistaken for the managed section. Refuse unclosed
+  frontmatter before writing, while preserving non-leading thematic breaks,
+  LF/CRLF, UTF-8 BOM, CLI exit-code, and apply-twice contracts.
 - Write merged Markdown through an exclusive same-directory temporary file,
   flush it, and commit with one atomic path replacement. Start private
   temporaries at POSIX mode `0600` or a protected Windows
