@@ -396,12 +396,12 @@ git diff --check
 
 The GitHub Actions workflow runs the same validation, the reference
 implementation tests, the scan self-test, the private-marker scan, and a
-whitespace check on both Windows and Ubuntu for pull requests and pushes
-to `main`. The Windows job runs the scanner checks under both PowerShell 7
-and Windows PowerShell 5.1. Scanner PowerShell sources use UTF-8 with BOM so
-their Japanese intent comments parse consistently in both hosts. Each matrix
-job has a 25-minute timeout so the Windows PowerShell 7 and 5.1 suites can
-finish sequentially under one bounded job.
+whitespace check on Windows, Ubuntu, and pinned GitHub-hosted macOS 15 for
+pull requests and pushes to `main`. The Windows job runs the scanner checks
+under both PowerShell 7 and Windows PowerShell 5.1. Scanner PowerShell sources
+use UTF-8 with BOM so their Japanese intent comments parse consistently in
+both hosts. Each matrix job has a 25-minute timeout so the Windows PowerShell
+7 and 5.1 suites can finish sequentially under one bounded job.
 
 ## Contributing
 

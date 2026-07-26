@@ -12,14 +12,13 @@ permissions:
 jobs:
   validate:
     name: Validate skill repository (${{ matrix.os }})
-    # Both platforms on purpose: Windows covers the primary authoring
-    # environment; Ubuntu covers the POSIX paths the README documents
-    # (python3 + pwsh) and guards the scanner's forward-slash path handling.
-    # Labels are left unpinned: the job only needs pwsh + git + Python 3.
+    # Windows covers the primary authoring environment. Ubuntu and pinned
+    # macOS 15 independently exercise the documented POSIX paths (python3 +
+    # pwsh), including forward-slash handling and native filesystem behavior.
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: [windows-latest, ubuntu-latest, macos-15]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     steps:
