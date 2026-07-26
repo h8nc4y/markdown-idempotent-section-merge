@@ -99,6 +99,7 @@ $fixtureNames = @(
     'append-missing-section',
     'frontmatter-heading-literal',
     'h1-boundary',
+    'html-block-heading-literal',
     'replace-existing-section',
     'subheading-boundary',
     'trap-heading-inside-fence'
@@ -121,6 +122,7 @@ $requiredFiles = @(
     'SKILL.md',
     'docs/SKILL.ja.md',
     'docs/frontmatter-heading-scan-contract.md',
+    'docs/html-block-heading-scan-contract.md',
     'examples/before-after.md',
     'examples/verification-recipe.md',
     'docs/private-marker-scanner-hardening.md',
@@ -153,6 +155,11 @@ Assert-FileContains -RelativePath 'README.md' -Pattern 'merge_section\.py' -Desc
 Assert-FileContains -RelativePath 'SKILL.md' -Pattern '(?is)frontmatter.*YAML.*TOML.*fail' -Description 'frontmatter-aware fail-closed contract'
 Assert-FileContains -RelativePath 'docs/SKILL.ja.md' -Pattern '(?is)frontmatter.*YAML.*TOML.*fail' -Description 'Japanese frontmatter-aware fail-closed contract'
 Assert-FileContains -RelativePath 'docs/frontmatter-heading-scan-contract.md' -Pattern '(?is)YAML.*TOML.*完全一致.*fail closed' -Description 'frontmatter heading-scan design and test contract'
+Assert-FileContains -RelativePath 'SKILL.md' -Pattern '(?is)CommonMark 0\.31\.2 raw HTML.*types 1.7.*type 7.*paragraph.*fail' -Description 'raw HTML heading-scan and fail-closed contract'
+Assert-FileContains -RelativePath 'docs/SKILL.ja.md' -Pattern '(?is)CommonMark 0\.31\.2 raw HTML.*type 1.7.*type 7.*段落.*fail closed' -Description 'Japanese raw HTML heading-scan and fail-closed contract'
+Assert-FileContains -RelativePath 'docs/html-block-heading-scan-contract.md' -Pattern '(?is)type 1.7.*未クローズ.*fail closed.*apply-twice.*CRLF.*BOM' -Description 'raw HTML heading-scan design and regression contract'
+Assert-FileContains -RelativePath 'docs/html-block-heading-scan-contract.md' -Pattern '(?is)ASCII.*Unicode case-fold.*end tag' -Description 'ASCII-only raw HTML tag grammar contract'
+Assert-FileContains -RelativePath 'docs/html-block-heading-scan-contract.md' -Pattern '(?is)link reference definition.*`===`.*fail closed.*inline HTML' -Description 'reference-definition setext ambiguity contract'
 Assert-FileContains -RelativePath '.gitignore' -Pattern '\.private-markers\.local' -Description 'ignore local private marker files'
 Assert-FileContains -RelativePath '.editorconfig' -Pattern '(?ms)^\[\*\.ps1\].*?^charset\s*=\s*utf-8-bom\s*$' -Description 'PowerShell UTF-8 BOM compatibility'
 Assert-FileContains -RelativePath 'CONTRIBUTING.md' -Pattern '(?im)no token|never.*token|secret' -Description 'secret-safe contribution guidance'

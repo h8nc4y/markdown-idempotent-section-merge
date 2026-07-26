@@ -3,9 +3,10 @@
 [![Validate](https://github.com/h8nc4y/markdown-idempotent-section-merge/actions/workflows/validate.yml/badge.svg)](https://github.com/h8nc4y/markdown-idempotent-section-merge/actions/workflows/validate.yml)
 
 An agent skill for Claude Code and Codex: idempotently replace-or-append a
-Markdown section without corrupting code fences — fence-aware heading scans,
-fixed-marker boundaries, single-H2 invariants, and an apply-twice-diff-zero
-verification recipe, backed by a tested reference implementation.
+Markdown section without corrupting code fences or raw HTML blocks —
+literal-region-aware heading scans, fixed-marker boundaries, single-H2
+invariants, and an apply-twice-diff-zero verification recipe, backed by a
+tested reference implementation.
 
 ## What It Solves
 
@@ -13,7 +14,7 @@ Agents (and scripts) constantly maintain one canonical `## Section` in
 Markdown files they do not fully own — `README.md`, `AGENTS.md`,
 `CLAUDE.md`, handbooks — on a "replace if present, append if missing" rule.
 The classic implementation takes the replace range as "the `## X` line up
-to the next `^##` match" and breaks in two measured ways:
+to the next `^##` match" and breaks in several measured ways:
 
 - **A `## ...` line inside a fenced code block** (a report template, a
   sample document) is misread as the next section boundary. The range is
@@ -23,12 +24,15 @@ to the next `^##` match" and breaks in two measured ways:
   grows the file.
 - **A bare `^##` regex also matches `###`**, so a subheading ends the range
   early and old subsections survive below the new ones.
+- **A `# ...` / `## ...` literal inside a CommonMark raw HTML block** can cut
+  the range mid-`script`, `style`, `pre`, comment, or other HTML block,
+  leaving its tail and closing syntax behind.
 
-The skill documents two safe boundary methods (fence-aware heading scan,
+The skill documents two safe boundary methods (literal-region-aware scan,
 fixed begin/end markers), the invariants that make replace-or-append well
 defined (H1/H2 boundaries — the folk `^##[^#]` hardened, exactly one
 heading per block, stop-and-report on malformed input), and a verification
-recipe — apply twice and require a zero diff, fence-aware heading
+recipe — apply twice and require a zero diff, literal-region-aware heading
 count = 1, `git diff --stat` = one file.
 
 None of this is hypothetical: the repository ships the fence-blind
@@ -180,6 +184,21 @@ replacement anchors. A recognized opener without its exact closer is refused
 before any write. The exact scope and regression plan are recorded in
 [the frontmatter heading-scan contract](docs/frontmatter-heading-scan-contract.md).
 
+Top-level, column 0–3 CommonMark 0.31.2 raw HTML block types 1–7 are also
+excluded from heading and setext scans. Fence and HTML states are processed by
+one exclusive state machine, so a delimiter inside the other literal region
+cannot leak state. For mutation safety, recognized type 1–5 blocks require
+their explicit end condition; ambiguous type 7 context fails closed. The
+tag/attribute alphabet remains ASCII-only; Unicode case-fold lookalikes never
+open or close an ASCII HTML block. A possible link reference definition
+followed by `===` is also refused when a partial scan cannot prove whether
+setext ended the paragraph; this includes CommonMark link labels that span
+multiple lines. The label state is escape-aware: a trailing backslash keeps a
+possible label open, while the first unescaped `]` without an immediate colon
+returns the text to ordinary paragraph handling. The
+precise supported profile and intentional CommonMark deviation are recorded in
+[the raw HTML heading-scan contract](docs/html-block-heading-scan-contract.md).
+
 The target's identity, metadata, and bytes are rechecked immediately before
 commit. This detects changes completed before that check, but the check and
 replacement are separate operations: a writer that changes an existing target
@@ -189,8 +208,9 @@ A previously missing target is installed with a no-replace operation, so a
 concurrent creation is never overwritten.
 
 Fixtures under [`tests/fixtures/`](tests/fixtures) cover the trap case
-(heading inside a code fence), a heading literal in leading frontmatter,
-append, replace, the `###` subheading boundary, and the `#` part boundary.
+(heading inside a code fence), heading literals in leading frontmatter and
+raw HTML, append, replace, the `###` subheading boundary, and the `#` part
+boundary.
 The self-test needs no dependencies:
 
 ```bash
@@ -227,9 +247,11 @@ repository paths you cannot publish, or customer data in public issues.
 閉じフェンスが再オープンして後続の節を丸ごと飲み込み、マージは冪等では
 なくなります（実行のたびにファイルが成長）。裸の `^##` は `###` にも
 マッチするため、小見出しでも範囲が早期切断されます。
+raw HTML block 内の疑似 H1/H2 でも同じ早期切断が起きるため、参照実装は
+frontmatter・fence・CommonMark HTML type 1〜7 を排他的に走査します。
 
-- 安全な境界2方式: コードフェンス状態を追跡する見出し走査（``` の内側は
-  見出しと数えない）、または固定 begin/end マーカー
+- 安全な境界2方式: frontmatter/fence/raw HTML 状態を追跡する見出し走査
+  （literal region 内は見出しと数えない）、または固定 begin/end マーカー
 - 不変条件: 境界は `^##[^#]`（`###` を除外）、正本ブロック内の H2 見出しは
   ちょうど1個
 - 検証レシピ: 同じマージを2回当てて `git diff` が空（apply-twice-diff-zero）、
@@ -255,6 +277,10 @@ repository paths you cannot publish, or customer data in public issues.
   would silently rewrite the visually swallowed tail. The same
   stop-and-report rule covers CR-only line endings and a possible setext
   heading inside the replaced span.
+- Recognized raw HTML types 1–5 must reach their explicit end condition in
+  both target and block. CommonMark itself permits EOF termination, but this
+  stricter mutation rule prevents an appended managed H2 from being swallowed
+  by raw HTML. Ambiguous type 7 context is refused as well.
 - A leading exact `---` (YAML) or `+++` (TOML) frontmatter opener must have an
   exact matching closer. The scanner ignores heading literals inside a closed
   block and fails closed on an unclosed one rather than confusing metadata
@@ -296,6 +322,13 @@ repository paths you cannot publish, or customer data in public issues.
 - Fence handling covers CommonMark's core column 0–3 backtick/tilde rules
   (including the backtick-info-string exclusion); fences inside blockquotes
   or deep list indentation are out of scope.
+- Raw HTML handling covers top-level, column 0–3 CommonMark 0.31.2 block
+  types 1–7. Container prefixes, lazy continuations, and 4+ character
+  indentation are not fully parsed; a possible type 7 start after such an
+  unknown context fails closed. Tag and attribute names use CommonMark's
+  ASCII grammar rather than Unicode case-fold matching. Possible-reference
+  plus setext ambiguity, including a multi-line link label, is likewise
+  refused.
 - UTF-8 with LF or CRLF only; CR-only endings are refused, and files mixing
   CRLF and LF are normalized to CRLF on the first write (reported as
   `normalized`).
