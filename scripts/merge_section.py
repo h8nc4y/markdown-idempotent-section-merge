@@ -3,8 +3,9 @@
 
 Reference implementation for the markdown-idempotent-section-merge skill:
 
-- Heading scans are fence-aware: lines inside ``` or ~~~ fenced code blocks
-  never count as headings or section boundaries.
+- Heading scans are literal-region-aware: lines inside ``` / ~~~ fenced code
+  blocks or top-level CommonMark raw HTML blocks never count as headings or
+  section boundaries.
 - Exact document-leading YAML/TOML frontmatter is excluded from heading and
   fence scans; an unclosed recognized opener fails closed before writing.
 - A section boundary is the next heading of level 1 or 2 (``#`` or ``##``
@@ -15,9 +16,9 @@ Reference implementation for the markdown-idempotent-section-merge skill:
   first line, a plain column-0 ``## Heading``.
 - Malformed input is refused (exit 2) instead of guessed at: duplicate
   copies of the heading in the target, extra headings in the block, an
-  unclosed code fence in either, unclosed leading YAML/TOML frontmatter,
-  CR-only line endings, or a possible setext heading (``===`` / ``---``
-  underline) inside the replaced span.
+  unclosed code fence in either, unclosed explicit-end raw HTML block,
+  unclosed leading YAML/TOML frontmatter, CR-only line endings, or a possible
+  setext heading (``===`` / ``---`` underline) inside the replaced span.
 - Applying the same merge twice leaves the file byte-identical
   (apply-twice-diff-zero). The target's line-ending style (LF or CRLF) and
   UTF-8 BOM are preserved; when only mixed line endings need normalizing,
@@ -82,6 +83,154 @@ _FRONTMATTER_CLOSERS = {
     "+++": ("TOML", ("+++",)),
 }
 
+# CommonMark 0.31.2 raw HTML block rules. Types 1–5 have explicit end
+# conditions; types 6/7 continue to the line before the next blank line.
+# Keeping these regexes close to the spec makes the intentionally supported
+# top-level profile auditable without importing a full Markdown parser.
+_ASCII_CASE_INSENSITIVE = re.IGNORECASE | re.ASCII
+_HTML_TYPE_1_START_RE = re.compile(
+    r"^<(?:pre|script|style|textarea)(?:[ \t]|>|$)",
+    _ASCII_CASE_INSENSITIVE,
+)
+_HTML_TYPE_1_END_RE = re.compile(
+    r"</(?:pre|script|style|textarea)>",
+    _ASCII_CASE_INSENSITIVE,
+)
+_HTML_TYPE_2_START_RE = re.compile(r"^<!--")
+_HTML_TYPE_2_END_RE = re.compile(r"-->")
+_HTML_TYPE_3_START_RE = re.compile(r"^<\?")
+_HTML_TYPE_3_END_RE = re.compile(r"\?>")
+_HTML_TYPE_4_START_RE = re.compile(r"^<![A-Za-z]")
+_HTML_TYPE_4_END_RE = re.compile(r">")
+_HTML_TYPE_5_START_RE = re.compile(r"^<!\[CDATA\[")
+_HTML_TYPE_5_END_RE = re.compile(r"\]\]>")
+
+_HTML_BLOCK_TAGS = (
+    "address",
+    "article",
+    "aside",
+    "base",
+    "basefont",
+    "blockquote",
+    "body",
+    "caption",
+    "center",
+    "col",
+    "colgroup",
+    "dd",
+    "details",
+    "dialog",
+    "dir",
+    "div",
+    "dl",
+    "dt",
+    "fieldset",
+    "figcaption",
+    "figure",
+    "footer",
+    "form",
+    "frame",
+    "frameset",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "head",
+    "header",
+    "hr",
+    "html",
+    "iframe",
+    "legend",
+    "li",
+    "link",
+    "main",
+    "menu",
+    "menuitem",
+    "nav",
+    "noframes",
+    "ol",
+    "optgroup",
+    "option",
+    "p",
+    "param",
+    "search",
+    "section",
+    "summary",
+    "table",
+    "tbody",
+    "td",
+    "tfoot",
+    "th",
+    "thead",
+    "title",
+    "tr",
+    "track",
+    "ul",
+)
+_HTML_TYPE_6_START_RE = re.compile(
+    r"^</?(?:%s)(?:[ \t]|/?>|$)" % "|".join(_HTML_BLOCK_TAGS),
+    _ASCII_CASE_INSENSITIVE,
+)
+
+# Type 7 uses CommonMark's ASCII tag/attribute grammar and must occupy its
+# whole line. Literal-content open tags belong to type 1, while their closing
+# tags may still start type 7 when encountered independently.
+_HTML_TAG_NAME = r"[A-Za-z][A-Za-z0-9-]*"
+_HTML_ATTRIBUTE_NAME = r"[A-Za-z_:][A-Za-z0-9:._-]*"
+_HTML_UNQUOTED_VALUE = r"""[^"'=<>`\x00-\x20]+"""
+_HTML_ATTRIBUTE_VALUE = (
+    r'(?:(?:%s)|(?:\'[^\']*\')|(?:"[^"]*"))' % _HTML_UNQUOTED_VALUE
+)
+_HTML_ATTRIBUTE = (
+    r"(?:[ \t]+%s(?:[ \t]*=[ \t]*%s)?)"
+    % (_HTML_ATTRIBUTE_NAME, _HTML_ATTRIBUTE_VALUE)
+)
+_HTML_OPEN_TAG = (
+    r"<(?!(?:pre|script|style|textarea)(?=[ \t/>]))"
+    + _HTML_TAG_NAME
+    + r"(?:"
+    + _HTML_ATTRIBUTE
+    + r")*[ \t]*/?>"
+)
+_HTML_CLOSE_TAG = r"</" + _HTML_TAG_NAME + r"[ \t]*>"
+_HTML_TYPE_7_START_RE = re.compile(
+    r"^(?:%s|%s)[ \t]*$" % (_HTML_OPEN_TAG, _HTML_CLOSE_TAG),
+    _ASCII_CASE_INSENSITIVE,
+)
+
+_HTML_START_PATTERNS = (
+    _HTML_TYPE_1_START_RE,
+    _HTML_TYPE_2_START_RE,
+    _HTML_TYPE_3_START_RE,
+    _HTML_TYPE_4_START_RE,
+    _HTML_TYPE_5_START_RE,
+    _HTML_TYPE_6_START_RE,
+    _HTML_TYPE_7_START_RE,
+)
+_HTML_EXPLICIT_END_PATTERNS = {
+    1: _HTML_TYPE_1_END_RE,
+    2: _HTML_TYPE_2_END_RE,
+    3: _HTML_TYPE_3_END_RE,
+    4: _HTML_TYPE_4_END_RE,
+    5: _HTML_TYPE_5_END_RE,
+}
+
+# Type 7 alone cannot interrupt an open paragraph. These small block-start
+# recognizers track only the top-level context this tool promises. A container
+# or 4-space-indent context is marked unknown and a possible type 7 opener
+# then fails closed instead of guessing.
+_ATX_ANY_RE = re.compile(r"^ {0,3}#{1,6}(?:[ \t]|$)")
+_THEMATIC_BREAK_RE = re.compile(
+    r"^ {0,3}(?:(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|(?:-[ \t]*){3,})$"
+)
+_CONTAINER_START_RE = re.compile(
+    r"^ {0,3}(?:>[ \t]?|[*+-](?:[ \t]|$)|\d{1,9}[.)](?:[ \t]|$))"
+)
+_INDENTED_CODE_START_RE = re.compile(r"^(?: {4}|\t)")
+_BLANK_RE = re.compile(r"^[ \t]*$")
+
 _BOM = b"\xef\xbb\xbf"
 _MAX_XATTR_COUNT = 256
 _MAX_XATTR_BYTES = 1024 * 1024
@@ -105,46 +254,6 @@ class AtomicCommitError(MergeError):
         self.artifacts = tuple(artifacts)
 
 
-def _fence_scan(lines, ignored_states=None):
-    """Return ``(states, open_at_end)``.
-
-    ``states`` maps each line to True when it belongs to a fenced code
-    block; both delimiter lines count as inside. A backtick fence whose info
-    string contains a backtick does not open (CommonMark). A fence closes
-    only on a run of the same character, at least as long as the opener,
-    with nothing else on the line; an unclosed fence runs to the end of the
-    document (CommonMark behaviour), which ``open_at_end`` reports.
-    """
-    states = []
-    open_char = ""
-    open_len = 0
-    for index, line in enumerate(lines):
-        # frontmatter 内の fence delimiter は Markdown 本文ではない。
-        # 状態遷移から除外し、frontmatter 後へ偽の open 状態を持ち越さない。
-        if ignored_states is not None and ignored_states[index]:
-            states.append(False)
-            continue
-        match = _FENCE_RE.match(line)
-        if not open_char:
-            if match and not (match.group(1)[0] == "`" and "`" in match.group(2)):
-                open_char = match.group(1)[0]
-                open_len = len(match.group(1))
-                states.append(True)
-            else:
-                states.append(False)
-            continue
-        states.append(True)
-        if (
-            match
-            and match.group(1)[0] == open_char
-            and len(match.group(1)) >= open_len
-            and not match.group(2).strip()
-        ):
-            open_char = ""
-            open_len = 0
-    return states, bool(open_char)
-
-
 def _frontmatter_scan(lines):
     """Return ``(states, unclosed_kind)`` for exact leading frontmatter.
 
@@ -166,12 +275,88 @@ def _frontmatter_scan(lines):
     return states, kind
 
 
-def _markdown_region_scan(lines):
-    """Return ``(ignored, fences, fence_open)`` for heading scans.
+def _html_block_start_type(candidate):
+    """Return the first matching CommonMark HTML block type, or zero."""
+    for block_type, pattern in enumerate(_HTML_START_PATTERNS, start=1):
+        if pattern.match(candidate):
+            return block_type
+    return 0
 
-    ``ignored`` covers leading frontmatter and fenced code. An unclosed
-    frontmatter opener is ambiguous with ordinary Markdown, so this helper
-    refuses it instead of guessing which bytes are safe to replace.
+
+def _first_unescaped_label_bracket(text, start=0):
+    """Return ``(index, bracket)`` for the first unescaped ``[`` or ``]``."""
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            # 行末 backslash も次行の改行をescapeし得るため、単独でも
+            # 「無効」と断定せず bracket 未確定のまま走査を終える。
+            escaped = True
+            continue
+        if char in "[]":
+            return index, char
+    return None
+
+
+def _possible_single_line_reference_definition(line):
+    """Return whether LINE has an unescaped link-label closer plus colon."""
+    leading_spaces = len(line) - len(line.lstrip(" "))
+    if leading_spaces > 3:
+        return False
+    candidate = line[leading_spaces:]
+    if not candidate.startswith("["):
+        return False
+
+    # definition は paragraph finalize 時に除去されるため、直後の ``===`` が
+    # setext にならない場合がある。完全構文は検証せず、少なくとも最初の
+    # 未escape bracketが ``]:`` で閉じることだけを候補条件にする。
+    bracket = _first_unescaped_label_bracket(candidate, start=1)
+    if bracket is None:
+        return False
+    index, char = bracket
+    return char == "]" and candidate[index + 1 :].startswith(":")
+
+
+def _possible_multiline_reference_label_start(line):
+    """Return whether LINE can start a link label that continues next line."""
+    leading_spaces = len(line) - len(line.lstrip(" "))
+    if leading_spaces > 3:
+        return False
+    candidate = line[leading_spaces:]
+    if not candidate.startswith("["):
+        return False
+
+    # CommonMark label は未escape bracketを内包できない。開始 ``[`` 後に
+    # それがまだ無ければ、行末 backslash の有無を問わず次行まで保留する。
+    return _first_unescaped_label_bracket(candidate, start=1) is None
+
+
+def _multiline_reference_label_continuation(line):
+    """Return ``open``, ``definition``, or ``ordinary`` for a label line."""
+    bracket = _first_unescaped_label_bracket(line)
+    if bracket is None:
+        return "open"
+
+    index, char = bracket
+    if char == "]" and line[index + 1 :].startswith(":"):
+        return "definition"
+
+    # 最初の未escape bracketが nested ``[``、または colon を伴わない
+    # ``]`` なら reference definition にはなれず、通常段落へ確定する。
+    return "ordinary"
+
+
+def _markdown_region_scan(lines):
+    """Return ``(ignored, fences, fence_open, html_open_type)``.
+
+    The single pass makes fence and raw-HTML states mutually exclusive:
+    delimiters inside the other literal region are data, never state changes.
+    ``html_open_type`` can only be 1–5 because types 6/7 end normally at a
+    blank line or EOF. A recognized but unclosed explicit-end HTML block is
+    reported to callers so every write path can fail closed.
     """
     frontmatter_states, unclosed_kind = _frontmatter_scan(lines)
     if unclosed_kind is not None:
@@ -181,16 +366,161 @@ def _markdown_region_scan(lines):
             "exact %s line before merging" % (unclosed_kind, expected)
         )
 
-    fence_region_states, fence_open = _fence_scan(
-        lines, ignored_states=frontmatter_states
+    ignored_states = list(frontmatter_states)
+    fence_region_states = [False] * len(lines)
+    open_fence_char = ""
+    open_fence_len = 0
+    open_html_type = 0
+    paragraph_context = "block"
+    paragraph_may_be_reference_only = False
+    possible_reference_label_open = False
+
+    for index, line in enumerate(lines):
+        # frontmatter 内の fence/HTML delimiter は metadata の bytes であり、
+        # 本文の状態機械へ一切持ち越さない。
+        if frontmatter_states[index]:
+            paragraph_context = "block"
+            paragraph_may_be_reference_only = False
+            possible_reference_label_open = False
+            continue
+
+        fence_match = _FENCE_RE.match(line)
+        if open_fence_char:
+            ignored_states[index] = True
+            fence_region_states[index] = True
+            if (
+                fence_match
+                and fence_match.group(1)[0] == open_fence_char
+                and len(fence_match.group(1)) >= open_fence_len
+                and not fence_match.group(2).strip()
+            ):
+                open_fence_char = ""
+                open_fence_len = 0
+                paragraph_context = "block"
+                paragraph_may_be_reference_only = False
+                possible_reference_label_open = False
+            continue
+
+        if open_html_type:
+            # type 6/7 は空行の「直前」で終了する。空行自体を ignored に
+            # すると後続 paragraph context の開始点がずれるため先に閉じる。
+            if open_html_type in (6, 7) and _BLANK_RE.match(line):
+                open_html_type = 0
+                paragraph_context = "block"
+                paragraph_may_be_reference_only = False
+                possible_reference_label_open = False
+            else:
+                ignored_states[index] = True
+                if (
+                    open_html_type <= 5
+                    and _HTML_EXPLICIT_END_PATTERNS[open_html_type].search(line)
+                ):
+                    open_html_type = 0
+                    paragraph_context = "block"
+                    paragraph_may_be_reference_only = False
+                    possible_reference_label_open = False
+                continue
+
+        if _BLANK_RE.match(line):
+            paragraph_context = "block"
+            paragraph_may_be_reference_only = False
+            possible_reference_label_open = False
+            continue
+
+        # CommonMark の block-start 優先順どおり、fence を HTML より先に
+        # 判定する。backtick info string 内の backtick は opener ではない。
+        if fence_match and not (
+            fence_match.group(1)[0] == "`" and "`" in fence_match.group(2)
+        ):
+            open_fence_char = fence_match.group(1)[0]
+            open_fence_len = len(fence_match.group(1))
+            ignored_states[index] = True
+            fence_region_states[index] = True
+            paragraph_context = "block"
+            paragraph_may_be_reference_only = False
+            possible_reference_label_open = False
+            continue
+
+        # HTML start condition は最大3個の ASCII space 後から評価する。
+        # 4-space indentation では candidate が space 始まりとなり一致しない。
+        candidate = line[min(len(line) - len(line.lstrip(" ")), 3) :]
+        html_type = _html_block_start_type(candidate)
+        if html_type == 7:
+            if paragraph_context == "paragraph":
+                # Complete tag 単独行でも段落を割り込めないため inline HTML。
+                html_type = 0
+            elif paragraph_context == "unknown":
+                raise MergeError(
+                    "ambiguous raw HTML block type 7 context at line %d; "
+                    "separate the tag from a container or indented block with "
+                    "a blank line before merging" % (index + 1)
+                )
+        if html_type:
+            ignored_states[index] = True
+            open_html_type = html_type
+            paragraph_context = "block"
+            paragraph_may_be_reference_only = False
+            possible_reference_label_open = False
+            if (
+                html_type <= 5
+                and _HTML_EXPLICIT_END_PATTERNS[html_type].search(line)
+            ):
+                open_html_type = 0
+            continue
+
+        # Type 7 の paragraph-interruption 制約に必要な最小文脈だけを追う。
+        # container/4-space code は完全解析せず unknown とし、次の type 7
+        # 候補で安全側に拒否する。
+        if _ATX_ANY_RE.match(line) or _THEMATIC_BREAK_RE.match(line):
+            paragraph_context = "block"
+            paragraph_may_be_reference_only = False
+            possible_reference_label_open = False
+        elif paragraph_context == "paragraph" and _SETEXT_RE.match(line):
+            if (
+                paragraph_may_be_reference_only
+                and not possible_reference_label_open
+            ):
+                raise MergeError(
+                    "ambiguous setext context after a possible link reference "
+                    "definition at line %d; add a blank line or use an ATX "
+                    "heading before merging" % (index + 1)
+                )
+            # label が未クローズのまま underline に達した場合は definition
+            # ではないため、通常の複数行 setext paragraph として閉じられる。
+            paragraph_context = "block"
+            paragraph_may_be_reference_only = False
+            possible_reference_label_open = False
+        elif paragraph_context == "paragraph" and possible_reference_label_open:
+            # 複数行 label の途中は container らしい記号も label bytes として
+            # 現れ得る。最初の未escape bracketまでを見て状態だけ確定する。
+            label_state = _multiline_reference_label_continuation(line)
+            if label_state != "open":
+                possible_reference_label_open = False
+                if label_state == "ordinary":
+                    paragraph_may_be_reference_only = False
+        elif _CONTAINER_START_RE.match(line) or _INDENTED_CODE_START_RE.match(line):
+            paragraph_context = "unknown"
+            paragraph_may_be_reference_only = False
+            possible_reference_label_open = False
+        elif paragraph_context == "block":
+            paragraph_context = "paragraph"
+            possible_single_line_definition = (
+                _possible_single_line_reference_definition(line)
+            )
+            possible_reference_label_open = (
+                _possible_multiline_reference_label_start(line)
+            )
+            paragraph_may_be_reference_only = bool(
+                possible_single_line_definition
+                or possible_reference_label_open
+            )
+
+    return (
+        ignored_states,
+        fence_region_states,
+        bool(open_fence_char),
+        open_html_type if open_html_type <= 5 else 0,
     )
-    ignored_states = [
-        in_frontmatter or in_fence
-        for in_frontmatter, in_fence in zip(
-            frontmatter_states, fence_region_states
-        )
-    ]
-    return ignored_states, fence_region_states, fence_open
 
 
 def fence_states(lines):
@@ -199,7 +529,7 @@ def fence_states(lines):
 
 
 def boundary_indices(lines):
-    """Indices of H1/H2 boundaries outside frontmatter and code fences."""
+    """Indices of H1/H2 boundaries outside every supported literal region."""
     ignored_states = _markdown_region_scan(lines)[0]
     return [
         i
@@ -209,7 +539,7 @@ def boundary_indices(lines):
 
 
 def heading_occurrences(lines, heading):
-    """Indices equal to HEADING outside frontmatter/fences (space aside)."""
+    """Indices equal to HEADING outside literal regions (space aside)."""
     ignored_states = _markdown_region_scan(lines)[0]
     return [
         i
@@ -234,15 +564,26 @@ def validate_block(block_lines):
     """Return the block's heading line after checking the merge invariants."""
     if not block_lines or not _H2_RE.match(block_lines[0]):
         raise MergeError("block must start with an H2 heading line ('## ...')")
-    if boundary_indices(block_lines) != [0]:
-        raise MergeError(
-            "block must contain exactly one H1/H2-level heading outside "
-            "code fences: its own first line"
-        )
-    if _fence_scan(block_lines)[1]:
+    region_scan = _markdown_region_scan(block_lines)
+    if region_scan[2]:
         # An unclosed fence in the block would swallow whatever follows the
         # merged section in the target — refuse instead of corrupting.
         raise MergeError("block ends inside an unclosed code fence")
+    if region_scan[3]:
+        raise MergeError(
+            "block ends inside an unclosed raw HTML block type %d; close its "
+            "explicit end condition before merging" % region_scan[3]
+        )
+    boundaries = [
+        index
+        for index, line in enumerate(block_lines)
+        if not region_scan[0][index] and _BOUNDARY_RE.match(line)
+    ]
+    if boundaries != [0]:
+        raise MergeError(
+            "block must contain exactly one H1/H2-level heading outside "
+            "literal regions: its own first line"
+        )
     return block_lines[0].rstrip()
 
 
@@ -253,7 +594,9 @@ def _reject_setext_in_span(lines, start, end):
     a real heading that ``_BOUNDARY_RE`` cannot see. Replacing across it
     would delete a section boundary without any error, so stop and report.
     """
-    states = fence_states(lines)
+    # setext-looking lines inside frontmatter/fence/raw HTML are literal data,
+    # not a Markdown boundary. Reuse the same combined mask as ATX scanning.
+    states = _markdown_region_scan(lines)[0]
     for index in range(start + 1, end):
         if states[index] or not _SETEXT_RE.match(lines[index]):
             continue
@@ -281,18 +624,27 @@ def merge(document_text, block_text):
     heading = validate_block(block_lines)
     block_lines[0] = heading  # heading is written without trailing spaces
 
-    if _markdown_region_scan(doc_lines)[2]:
+    target_regions = _markdown_region_scan(doc_lines)
+    if target_regions[2]:
         # CommonMark runs an unclosed fence to EOF, so the section would
         # extend to EOF and a replace would rewrite the whole visually
         # swallowed tail. Malformed input: stop and report instead.
         raise MergeError(
             "target ends inside an unclosed code fence; close it before merging"
         )
+    if target_regions[3]:
+        # CommonMark permits explicit-end HTML blocks to reach EOF. Appending a
+        # managed H2 there would hide it inside raw HTML and break idempotence,
+        # so this mutating tool deliberately applies a stricter contract.
+        raise MergeError(
+            "target ends inside an unclosed raw HTML block type %d; close its "
+            "explicit end condition before merging" % target_regions[3]
+        )
 
     occurrences = heading_occurrences(doc_lines, heading)
     if len(occurrences) > 1:
         raise MergeError(
-            "target contains %d copies of '%s' outside code fences; "
+            "target contains %d copies of '%s' outside literal regions; "
             "deduplicate it before merging" % (len(occurrences), heading)
         )
 

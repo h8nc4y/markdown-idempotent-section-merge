@@ -86,10 +86,11 @@ literals and be fooled by them).
 
 ## Safe Boundaries: Two Methods
 
-### Method 1 — fence-aware heading scan
+### Method 1 — literal-region-aware heading scan
 
-Track fence state while scanning lines, and only treat a line as a heading
-or boundary when it is outside every fence:
+Track literal-region state while scanning lines, and only treat a line as a
+heading or boundary when it is outside frontmatter, fences, and supported raw
+HTML blocks:
 
 - A fence opens on a line whose first non-space characters (at most 3
   leading spaces) are a run of 3+ backticks or 3+ tildes.
@@ -102,6 +103,25 @@ or boundary when it is outside every fence:
   closes with exact `+++`. A heading-looking line inside that block is
   metadata/comment content, not a Markdown section boundary. An opener without
   its exact closer fails closed before any write.
+- At top level, column 0–3
+  [CommonMark 0.31.2 raw HTML blocks](https://spec.commonmark.org/0.31.2/#html-blocks)
+  of types 1–7 are excluded too: literal-content tags
+  (`pre`/`script`/`style`/`textarea`), comments, processing instructions,
+  declarations, CDATA, listed block tags, and complete tag-only lines. Types
+  6/7 end before a blank line or at EOF; type 7 cannot interrupt a paragraph.
+  Tag and attribute grammar stays ASCII-only even under case-insensitive
+  matching; Unicode case-fold lookalikes are ordinary Markdown.
+  Fence and HTML state share one exclusive scanner, so delimiters inside the
+  other region stay literal data.
+- This mutating reference is intentionally stricter than CommonMark at an
+  ambiguous EOF: a recognized type 1–5 opener without its explicit end
+  condition fails closed. A possible type 7 opener after an unsupported
+  container/indented context also fails closed instead of guessing. The same
+  rule covers a possible link reference definition followed by `===`, where
+  a partial parser cannot prove whether setext ended the paragraph. Possible
+  link labels are tracked across lines with escape-aware bracket handling; an
+  unescaped `]` without an immediate colon releases the possible-definition
+  state. The simple no-blank definition-plus-tag form remains inline HTML.
 - The section boundary is the next heading of level 1 **or** 2. The folk
   form is `^##[^#]` (exclude `###`); the reference hardens it to
   `^ {0,3}#{1,2}([ \t]|$)`, which additionally treats an H1 as a boundary
@@ -147,11 +167,12 @@ well defined:
 1. **The block starts with its own `## Heading` line** — the heading is
    part of the merged content, not configuration that can drift from it.
 2. **Exactly one H1/H2-level heading inside the block** — its own first
-   line (fence-aware count). A block with a second H2 would silently
+   line (literal-region-aware count). A block with a second H2 would silently
    absorb the next section on the following run; a block with an H1 would
-   cut itself in two. Fenced `## ...` literals inside the block are fine —
-   they do not count.
-3. **At most one copy of the heading in the target** (outside fences).
+   cut itself in two. Fenced or raw-HTML `## ...` literals inside the block
+   are fine — they do not count.
+3. **At most one copy of the heading in the target** (outside literal
+   regions).
    If the document already contains duplicates, stop and report instead of
    "fixing" one of them and leaving the other.
 4. **A canonical separator shape.** Store the block with no trailing blank
@@ -172,6 +193,13 @@ well defined:
    (YAML) or `+++` (TOML), ignore its heading-looking lines only through the
    first exact matching closer. If no closer exists, stop instead of guessing
    whether the opener was metadata or an ordinary Markdown thematic break.
+8. **No ambiguous explicit-end raw HTML.** CommonMark lets types 1–5 run to
+   EOF when their end condition is missing, but appending an H2 there would
+   hide it inside raw HTML and break convergence. Require the explicit end
+   condition in both target and block. For type 7, preserve its
+   no-paragraph-interruption rule and fail closed when an unsupported
+   container/indented or possible-reference-plus-setext context, including a
+   multi-line link label, makes that decision ambiguous.
 
 ## Verification Recipe
 
@@ -242,13 +270,14 @@ state cannot prove either outcome. Cleanup checks identity immediately before
 unlink, but portable path-based unlink still has a final name-swap window;
 private unpredictable names and fail-closed artifact retention mitigate it.
 Malformed input — a duplicate heading in the target, an extra heading in the
-block, an unclosed fence in either, unclosed leading YAML/TOML frontmatter,
-CR-only line endings, a possible setext heading inside the span — exits with
-code 2 instead of guessing. Exact leading YAML (`---` through `---` or `...`)
-and TOML (`+++` through `+++`) frontmatter is excluded from heading and fence
-state scans, so metadata comments cannot become replacement anchors. When only
-mixed line endings need normalizing, the action is reported honestly as
-`normalized` / `would-normalize`, never as "unchanged".
+block, an unclosed fence or explicit-end raw HTML block in either, ambiguous
+type 7 context, unclosed leading YAML/TOML frontmatter, CR-only line endings,
+or a possible setext heading inside the span — exits with code 2 instead of
+guessing. Exact leading YAML (`---` through `---` or `...`) and TOML (`+++`
+through `+++`) frontmatter plus the supported raw HTML profile are excluded
+from heading scans, so literal headings cannot become replacement anchors.
+When only mixed line endings need normalizing, the action is reported honestly
+as `normalized` / `would-normalize`, never as "unchanged".
 
 The fixtures under [`tests/fixtures/`](tests/fixtures) are one folder per
 case, each with `input.md`, `section.md`, and `expected.md`:
@@ -257,6 +286,7 @@ case, each with `input.md`, `section.md`, and `expected.md`:
 | --- | --- |
 | `trap-heading-inside-fence` | Fenced `## ...` literals do not end the range |
 | `frontmatter-heading-literal` | Leading YAML metadata comments are not merge anchors |
+| `html-block-heading-literal` | Raw HTML `#` / `##` literals do not cut the range |
 | `append-missing-section` | Absent section is appended with one separator line |
 | `replace-existing-section` | Present section is replaced in place |
 | `subheading-boundary` | `###` subheadings stay inside; range ends at the next real `##` |
@@ -297,6 +327,13 @@ the scanner back into the trap, these tests fail first.
   core rules, including the backtick-info-string exclusion; exotic cases
   (fences inside blockquotes or deep list indentation) are out of scope
   for the reference.
+- Raw HTML handling covers top-level, column 0–3 CommonMark 0.31.2 block
+  types 1–7. Container prefixes, lazy continuations, and 4+ character
+  indentation are not fully parsed. A possible type 7 opener after such an
+  unknown context is refused; add a blank line or use fixed markers.
+  Unlike CommonMark, recognized type 1–5 blocks require their explicit end
+  condition for mutation safety. See
+  [`docs/html-block-heading-scan-contract.md`](docs/html-block-heading-scan-contract.md).
 - UTF-8 documents with LF or CRLF line endings only. CR-only (classic Mac)
   endings are refused — they would break byte idempotency. A file mixing
   CRLF and LF is treated as CRLF (any CRLF present selects CRLF), rewritten

@@ -6,7 +6,7 @@
 Per fixture under tests/fixtures/ it verifies that the merged output equals
 expected.md byte-for-byte, that applying the same merge twice is a no-op
 (apply-twice-diff-zero), and that the section heading occurs exactly once
-outside leading frontmatter and code fences afterwards.
+outside leading frontmatter, code fences, and raw HTML blocks afterwards.
 
 It also proves the skill's trap is real, not hypothetical: a fence-blind
 ``^##`` implementation (kept here as ``fence_blind_merge``) corrupts the
@@ -52,7 +52,7 @@ def load(fixture, name):
 
 
 def h2_count(text, heading):
-    """Count HEADING outside leading frontmatter and code fences."""
+    """Count HEADING outside leading frontmatter and literal regions."""
     lines = text.split("\n")
     return len(merge_section.heading_occurrences(lines, heading))
 
@@ -93,6 +93,7 @@ class FixtureMergeTests(unittest.TestCase):
             "append-missing-section",
             "frontmatter-heading-literal",
             "h1-boundary",
+            "html-block-heading-literal",
             "replace-existing-section",
             "subheading-boundary",
             "trap-heading-inside-fence",
@@ -409,6 +410,467 @@ class BoundaryHardeningTests(unittest.TestCase):
         )
         with self.assertRaises(merge_section.MergeError):
             merge_section.merge(doc, "## Notes\n\nnew.\n")
+
+
+class HtmlBlockBoundaryTests(unittest.TestCase):
+    """CommonMark raw HTML blocks must not expose heading-looking literals."""
+
+    block = "## Notes\n\nCanonical body.\n"
+    expected = (
+        "## Notes\n\nCanonical body.\n\n"
+        "## Next\n\nKeep this real section.\n"
+    )
+
+    def _assert_html_body_is_replaced(self, opener, closer):
+        document = (
+            "## Notes\n\nOld body.\n\n"
+            f"{opener}\n"
+            "# Hidden title\n"
+            "## Hidden section\n"
+            f"{closer}\n"
+            "Old tail.\n\n"
+            "## Next\n\nKeep this real section.\n"
+        )
+
+        # HTML 内の疑似境界では止まらず、HTML と旧 tail を含む管理対象節全体を
+        # 次の実 H2 直前まで置換することを全文一致で固定する。
+        merged, action = merge_section.merge(document, self.block)
+        self.assertEqual(action, "replaced")
+        self.assertEqual(merged, self.expected)
+
+    def test_explicit_end_html_types_hide_pseudo_headings(self):
+        cases = {
+            "script": ("<script type=\"text/plain\">", "</script>"),
+            "style": ("<style>", "</style>"),
+            "pre": ("<pre>", "</pre>"),
+            "textarea": ("<textarea>", "</textarea>"),
+            "comment": ("<!--", "-->"),
+            "processing-instruction": ("<?synthetic", "?>"),
+            "declaration": ("<!SYNTHETIC", ">"),
+            "cdata": ("<![CDATA[", "]]>"),
+        }
+        for kind, (opener, closer) in cases.items():
+            with self.subTest(kind=kind):
+                self._assert_html_body_is_replaced(opener, closer)
+
+    def test_type_one_is_case_insensitive_and_accepts_any_family_end_tag(self):
+        # CommonMark type 1 の終端は opener と同名でなくてもよい。この少し
+        # 意外な規則を固定し、独自 HTML tag-stack へ変質させない。
+        self._assert_html_body_is_replaced("<SCRIPT>", "</TeXtArEa>")
+
+    def test_explicit_end_html_accepts_zero_to_three_leading_spaces(self):
+        for indent in ("", " ", "  ", "   "):
+            with self.subTest(spaces=len(indent)):
+                self._assert_html_body_is_replaced(
+                    indent + "<script>",
+                    indent + "</script>",
+                )
+
+    def test_explicit_end_html_can_open_and_close_on_one_line(self):
+        document = (
+            "## Notes\n\nOld body.\n\n"
+            "<script>const synthetic = '## literal';</script>\n"
+            "Old tail.\n\n"
+            "## Next\n\nKeep this real section.\n"
+        )
+        merged, action = merge_section.merge(document, self.block)
+        self.assertEqual(action, "replaced")
+        self.assertEqual(merged, self.expected)
+
+    def test_blank_line_terminated_html_types_hide_pseudo_headings(self):
+        cases = {
+            # type 6 は tag 全体が未完成でも、列挙 tag + 空白で開始する。
+            "type-6": "<DIV class",
+            # type 7 は block-level list 外の complete tag 単独行で開始する。
+            "type-7": "<Synthetic-Widget data-mode='preview'>",
+        }
+        for kind, opener in cases.items():
+            with self.subTest(kind=kind):
+                document = (
+                    "## Notes\n\nOld body.\n\n"
+                    f"{opener}\n"
+                    "# Hidden title\n"
+                    "## Hidden section\n"
+                    "</Synthetic-Widget>\n"
+                    "\n"
+                    "Old tail.\n\n"
+                    "## Next\n\nKeep this real section.\n"
+                )
+                merged, action = merge_section.merge(document, self.block)
+                self.assertEqual(action, "replaced")
+                self.assertEqual(merged, self.expected)
+
+    def test_type_seven_does_not_interrupt_a_paragraph(self):
+        document = (
+            "## Notes\n\n"
+            "Old paragraph without a separating blank line.\n"
+            "<Synthetic-Widget>\n"
+            "## Next\n\nKeep this real section.\n"
+        )
+
+        # type 7 の complete tag でも段落途中では inline HTML である。
+        # 直後の実 H2 を HTML に飲み込まず、境界として残す。
+        merged, action = merge_section.merge(document, self.block)
+        self.assertEqual(action, "replaced")
+        self.assertEqual(merged, self.expected)
+
+    def test_reference_definition_then_equals_html_context_fails_closed(self):
+        document = (
+            "[ref]: /synthetic\n"
+            "===\n"
+            "<Synthetic-Widget>\n"
+            "## Managed\n"
+            "</Synthetic-Widget>\n"
+        )
+        block = "## Managed\n\nCanonical body.\n"
+
+        # CommonMark 0.31.2 Example 216 の系: 有効な reference definition
+        # だけの paragraph に続く === は setext 化できず、=== 自体が新しい
+        # paragraph text になる。簡易走査では definition の完全妥当性を証明
+        # できないため、type 7 を開始して同名H2を隠す推測はせず拒否する。
+        with self.assertRaisesRegex(
+            merge_section.MergeError,
+            "ambiguous setext context after a possible link reference "
+            "definition",
+        ):
+            merge_section.merge(document, block)
+
+    def test_multiline_reference_label_then_equals_html_context_fails_closed(self):
+        document = (
+            "[\n"
+            "foo\n"
+            "]: /synthetic\n"
+            "===\n"
+            "<Synthetic-Widget>\n"
+            "## Managed\n"
+            "</Synthetic-Widget>\n"
+        )
+        block = "## Managed\n\nCanonical body.\n"
+
+        # CommonMark 0.31.2 Example 208 型では link label 自体が複数行に
+        # またがれる。閉じ行まで possible definition 状態を維持しないと、
+        # === 後の type 7 が実H2を隠し、同名節の重複appendを許してしまう。
+        with self.assertRaisesRegex(
+            merge_section.MergeError,
+            "ambiguous setext context after a possible link reference "
+            "definition",
+        ):
+            merge_section.merge(document, block)
+
+    def test_escaped_line_end_multiline_reference_fails_closed(self):
+        document = (
+            "[foo\\\n"
+            "bar]: /synthetic\n"
+            "===\n"
+            "<Synthetic-Widget>\n"
+            "## Managed\n"
+            "</Synthetic-Widget>\n"
+        )
+        block = "## Managed\n\nCanonical body.\n"
+
+        # 行末の単一 backslash も複数行labelを無効化しない。開始判定から
+        # 漏れると type 7 が実H2を隠し、同名節を末尾へ重複appendしてしまう。
+        with self.assertRaisesRegex(
+            merge_section.MergeError,
+            "ambiguous setext context after a possible link reference "
+            "definition",
+        ):
+            merge_section.merge(document, block)
+
+    def test_closed_bracket_text_is_not_a_multiline_reference_label(self):
+        lines = (
+            "[Ordinary bracketed text]\n"
+            "===\n"
+            "## Candidate\n"
+        ).splitlines()
+
+        # 同じ行で閉じた通常の bracket text は複数行labelの開始ではない。
+        # 保守判定を必要以上に広げず、後続の実ATX見出しを走査できる。
+        self.assertEqual(merge_section.boundary_indices(lines), [2])
+
+    def test_multiline_bracket_text_without_colon_releases_reference_state(self):
+        lines = (
+            "[Ordinary\n"
+            "bracketed text]\n"
+            "===\n"
+            "## Candidate\n"
+        ).splitlines()
+
+        # 最初の未escape ``]`` の直後が colon でなければ definition には
+        # なれない。通常の複数行 setext text を曖昧入力として過剰拒否しない。
+        self.assertEqual(merge_section.boundary_indices(lines), [3])
+
+    def test_escaped_closing_bracket_is_not_a_reference_definition(self):
+        lines = (
+            "[Escaped\\]: ordinary text\n"
+            "===\n"
+            "## Candidate\n"
+        ).splitlines()
+
+        # ``\]`` は label closer ではない。表面的な ``]:`` だけで
+        # definition候補にすると通常setext textを過剰拒否してしまう。
+        self.assertEqual(merge_section.boundary_indices(lines), [2])
+
+    def test_type_seven_after_link_reference_definition_stays_in_paragraph(self):
+        lines = (
+            "[ref]: /synthetic\n"
+            "<Synthetic-Widget>\n"
+            "## Candidate\n"
+            "</Synthetic-Widget>\n"
+        ).splitlines()
+
+        # 空行なしの単純形は CommonMark 0.31.2 と同じく type 7 が段落を
+        # 割り込めない。compound === caseを安全化しても、この実H2を隠さない。
+        self.assertEqual(merge_section.boundary_indices(lines), [2])
+
+    def test_type_seven_can_start_after_an_atx_subheading(self):
+        document = (
+            "## Notes\n\nOld body.\n\n"
+            "### Child\n"
+            "<Synthetic-Widget>\n"
+            "## Hidden section\n"
+            "</Synthetic-Widget>\n"
+            "\n"
+            "Old tail.\n\n"
+            "## Next\n\nKeep this real section.\n"
+        )
+        merged, action = merge_section.merge(document, self.block)
+        self.assertEqual(action, "replaced")
+        self.assertEqual(merged, self.expected)
+
+    def test_closing_tags_can_start_type_six_and_type_seven_blocks(self):
+        for kind, opener in (
+            ("type-6", "</DIV>"),
+            ("type-7", "</Synthetic-Widget>"),
+        ):
+            with self.subTest(kind=kind):
+                document = (
+                    "## Notes\n\nOld body.\n\n"
+                    f"{opener}\n"
+                    "## Hidden section\n"
+                    "\n"
+                    "Old tail.\n\n"
+                    "## Next\n\nKeep this real section.\n"
+                )
+                merged, action = merge_section.merge(document, self.block)
+                self.assertEqual(action, "replaced")
+                self.assertEqual(merged, self.expected)
+
+    def test_blank_line_html_types_may_end_at_eof(self):
+        for kind, opener in (
+            ("type-6", "<div>"),
+            ("type-7", "<Synthetic-Widget>"),
+        ):
+            with self.subTest(kind=kind):
+                document = (
+                    "# Document\n\n"
+                    f"{opener}\n"
+                    "## Hidden section\n"
+                )
+                block = "## Managed\n\nCanonical body.\n"
+                expected = document + "\n" + block
+
+                # type 6/7 の EOF は仕様上の正常終端。追記時に入る空行が
+                # HTML と新しい管理対象 H2 を分離し、2回目は同じ bytes になる。
+                merged, action = merge_section.merge(document, block)
+                self.assertEqual(action, "appended")
+                self.assertEqual(merged, expected)
+                twice, second_action = merge_section.merge(merged, block)
+                self.assertEqual(second_action, "unchanged")
+                self.assertEqual(twice, merged)
+
+    def test_ambiguous_type_seven_after_container_fails_closed(self):
+        document = (
+            "## Notes\n\nOld body.\n\n"
+            "- Synthetic list item\n"
+            "<Synthetic-Widget>\n"
+            "## Hidden or real depending on container parsing\n"
+        )
+        with self.assertRaisesRegex(
+            merge_section.MergeError,
+            "ambiguous raw HTML block type 7 context",
+        ):
+            merge_section.merge(document, self.block)
+
+    def test_tag_prefixes_and_trailing_text_do_not_open_wrong_html_type(self):
+        for label, ordinary_line in (
+            ("type-1-prefix", "<scripture> trailing text"),
+            ("type-6-prefix", "<divine> trailing text"),
+            ("type-7-trailing-text", "<Synthetic-Widget> trailing text"),
+        ):
+            with self.subTest(label=label):
+                document = (
+                    "## Notes\n\nOld body.\n\n"
+                    f"{ordinary_line}\n"
+                    "Still ordinary paragraph text.\n"
+                    "## Next\n\nKeep this real section.\n"
+                )
+                merged, action = merge_section.merge(document, self.block)
+                self.assertEqual(action, "replaced")
+                self.assertEqual(merged, self.expected)
+
+    def test_unicode_casefold_characters_are_not_ascii_html_tag_grammar(self):
+        invalid_html_lines = (
+            # Python IGNORECASE without ASCII also folds these four code points
+            # into [A-Z]/[a-z]. CommonMark tag grammar is ASCII-only.
+            "<İtag>",
+            "<ıtag>",
+            "<ſtag>",
+            "<Ktag>",
+            # Literal tag-name regexes must not inherit the same Unicode fold.
+            "<ſcript>",
+            "<ſection>",
+            "<İframe>",
+            "<ıframe>",
+            # Type 7 attribute names are ASCII-only at every position too.
+            "<custom Key='synthetic'>",
+            "<custom data-K='synthetic'>",
+        )
+        for invalid_line in invalid_html_lines:
+            with self.subTest(codepoints=invalid_line.encode("unicode_escape")):
+                document = (
+                    "## Notes\n\nOld body.\n\n"
+                    f"{invalid_line}\n"
+                    "## Next\n\nKeep this real section.\n"
+                )
+                merged, action = merge_section.merge(document, self.block)
+                self.assertEqual(action, "replaced")
+                self.assertEqual(merged, self.expected)
+
+    def test_unicode_casefold_end_tag_does_not_close_ascii_type_one(self):
+        for invalid_closer in ("</ſcript>", "</scrİpt>", "</scrıpt>"):
+            with self.subTest(
+                codepoints=invalid_closer.encode("unicode_escape")
+            ):
+                document = (
+                    "## Notes\n\nOld body.\n\n"
+                    "<script>\n"
+                    "## Hidden section\n"
+                    f"{invalid_closer}\n"
+                    "## Next\n\nKeep this apparent section.\n"
+                )
+
+                # ASCII <script> remains unclosed. Treating a Unicode-folded
+                # closer as ASCII would bypass the mutation-safety guard.
+                with self.assertRaisesRegex(
+                    merge_section.MergeError,
+                    "unclosed raw HTML block type 1",
+                ):
+                    merge_section.merge(document, self.block)
+
+    def test_four_space_html_opener_is_indented_code_not_raw_html(self):
+        document = (
+            "## Notes\n\nOld body.\n\n"
+            "    <script>\n"
+            "    ## Hidden indented-code heading\n"
+            "\n"
+            "## Next\n\nKeep this real section.\n"
+        )
+        merged, action = merge_section.merge(document, self.block)
+        self.assertEqual(action, "replaced")
+        self.assertEqual(merged, self.expected)
+
+    def test_fence_delimiter_inside_html_does_not_open_a_fence(self):
+        document = (
+            "## Notes\n\nOld body.\n\n"
+            "<div>\n"
+            "```\n"
+            "## Hidden section\n"
+            "\n"
+            "Old tail.\n\n"
+            "## Next\n\nKeep this real section.\n"
+        )
+
+        # type 6 HTML は空行まで続くため、内部の bare fence は状態遷移しない。
+        # これを fence-first の独立走査に戻すと unclosed fence と誤判定する。
+        merged, action = merge_section.merge(document, self.block)
+        self.assertEqual(action, "replaced")
+        self.assertEqual(merged, self.expected)
+
+    def test_html_opener_inside_fence_does_not_open_html(self):
+        document = (
+            "## Notes\n\nOld body.\n\n"
+            "```html\n"
+            "<script>\n"
+            "## Hidden section\n"
+            "```\n"
+            "\n"
+            "Old tail.\n\n"
+            "## Next\n\nKeep this real section.\n"
+        )
+        merged, action = merge_section.merge(document, self.block)
+        self.assertEqual(action, "replaced")
+        self.assertEqual(merged, self.expected)
+
+    def test_setext_like_underline_inside_html_is_ignored(self):
+        document = (
+            "## Notes\n\nOld body.\n\n"
+            "<div>\n"
+            "Synthetic title\n"
+            "---\n"
+            "## Hidden section\n"
+            "\n"
+            "Old tail.\n\n"
+            "## Next\n\nKeep this real section.\n"
+        )
+        merged, action = merge_section.merge(document, self.block)
+        self.assertEqual(action, "replaced")
+        self.assertEqual(merged, self.expected)
+
+    def test_html_like_content_inside_frontmatter_does_not_leak_state(self):
+        document = (
+            "---\n"
+            "title: Synthetic guide\n"
+            "example: |\n"
+            "  <script>\n"
+            "## Hidden metadata heading\n"
+            "---\n"
+            "\n"
+            "## Notes\n\nOld body.\n\n"
+            "## Next\n\nKeep this real section.\n"
+        )
+        expected = (
+            "---\n"
+            "title: Synthetic guide\n"
+            "example: |\n"
+            "  <script>\n"
+            "## Hidden metadata heading\n"
+            "---\n"
+            "\n"
+            + self.expected
+        )
+        merged, action = merge_section.merge(document, self.block)
+        self.assertEqual(action, "replaced")
+        self.assertEqual(merged, expected)
+
+    def test_unclosed_explicit_end_html_types_fail_closed_in_target(self):
+        openers = {
+            "type 1": "<script>",
+            "type 2": "<!--",
+            "type 3": "<?synthetic",
+            "type 4": "<!SYNTHETIC",
+            "type 5": "<![CDATA[",
+        }
+        for kind, opener in openers.items():
+            with self.subTest(kind=kind):
+                document = (
+                    "## Notes\n\nOld body.\n\n"
+                    f"{opener}\n"
+                    "## Hidden section\n"
+                )
+                with self.assertRaisesRegex(
+                    merge_section.MergeError,
+                    f"unclosed raw HTML block {kind}",
+                ):
+                    merge_section.merge(document, self.block)
+
+    def test_unclosed_explicit_end_html_type_fails_closed_in_block(self):
+        block = "## Notes\n\n<script>\n## Hidden section\n"
+        with self.assertRaisesRegex(
+            merge_section.MergeError,
+            "unclosed raw HTML block type 1",
+        ):
+            merge_section.merge("# Document\n", block)
 
 
 class WindowsCommitRecoveryTests(unittest.TestCase):
@@ -1935,6 +2397,33 @@ class FileLevelTests(unittest.TestCase):
         self.assertFalse(changed)
         self.assertEqual(action, "unchanged")
 
+    def test_html_block_merge_preserves_crlf_and_bom(self):
+        fixture = "html-block-heading-literal"
+        bom = b"\xef\xbb\xbf"
+        target = self._write(
+            "target.md",
+            bom
+            + load(fixture, "input.md").replace("\n", "\r\n").encode("utf-8"),
+        )
+        block = self._write(
+            "section.md", load(fixture, "section.md").encode("utf-8")
+        )
+
+        # HTML-aware range selection must not weaken byte-level encoding and
+        # EOL preservation at the file boundary.
+        changed, action = merge_section.merge_file(target, block)
+        self.assertTrue(changed)
+        self.assertEqual(action, "replaced")
+        expected = (
+            bom
+            + load(fixture, "expected.md").replace("\n", "\r\n").encode("utf-8")
+        )
+        self.assertEqual(target.read_bytes(), expected)
+
+        changed, action = merge_section.merge_file(target, block)
+        self.assertFalse(changed)
+        self.assertEqual(action, "unchanged")
+
     def test_missing_target_is_created_by_append(self):
         fixture = "append-missing-section"
         target = self.dir / "new.md"
@@ -2059,6 +2548,79 @@ class FileLevelTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 2)
                 self.assertIn("unclosed YAML frontmatter", result.stderr)
                 self.assertEqual(target.read_bytes(), original)
+
+    def test_cli_rejects_unclosed_html_without_writing(self):
+        original = (
+            b"## Managed\n\nOld body.\n\n"
+            b"<!--\n"
+            b"## Hidden section\n"
+        )
+        target = self._write("target.md", original)
+        block = self._write(
+            "section.md", b"## Managed\n\nCanonical body.\n"
+        )
+
+        # 通常実行と dry-run の双方で同じ validation error にし、atomic write
+        # へ到達しないことを元 bytes の完全一致で確認する。
+        for check_arg in ((), ("--check",)):
+            with self.subTest(check=bool(check_arg)):
+                result = self._run_cli(str(target), str(block), *check_arg)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(
+                    "unclosed raw HTML block type 2",
+                    result.stderr,
+                )
+                self.assertEqual(target.read_bytes(), original)
+
+    def test_api_and_cli_reject_multiline_reference_html_without_writing(self):
+        originals = {
+            "split-label": (
+                b"[\n"
+                b"foo\n"
+                b"]: /synthetic\n"
+                b"===\n"
+                b"<Synthetic-Widget>\n"
+                b"## Managed\n"
+                b"</Synthetic-Widget>\n"
+            ),
+            "escaped-line-end": (
+                b"[foo\\\n"
+                b"bar]: /synthetic\n"
+                b"===\n"
+                b"<Synthetic-Widget>\n"
+                b"## Managed\n"
+                b"</Synthetic-Widget>\n"
+            ),
+        }
+        block = self._write(
+            "section.md", b"## Managed\n\nCanonical body.\n"
+        )
+
+        # API と CLI の全mutation経路で、曖昧な複数行definitionを同じ
+        # validation error に畳み込み、元bytesを1回も変更しない。
+        for label, original in originals.items():
+            with self.subTest(label=label):
+                target = self._write("%s.md" % label, original)
+                with self.assertRaisesRegex(
+                    merge_section.MergeError,
+                    "ambiguous setext context after a possible link reference "
+                    "definition",
+                ):
+                    merge_section.merge_file(target, block)
+                self.assertEqual(target.read_bytes(), original)
+
+                for check_arg in ((), ("--check",)):
+                    with self.subTest(check=bool(check_arg)):
+                        result = self._run_cli(
+                            str(target), str(block), *check_arg
+                        )
+                        self.assertEqual(result.returncode, 2)
+                        self.assertIn(
+                            "ambiguous setext context after a possible link "
+                            "reference definition",
+                            result.stderr,
+                        )
+                        self.assertEqual(target.read_bytes(), original)
 
     def test_cli_reports_tri_state_and_every_recovery_artifact(self):
         target = self.dir / "target.md"

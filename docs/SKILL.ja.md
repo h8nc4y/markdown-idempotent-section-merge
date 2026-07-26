@@ -73,10 +73,10 @@ Keep the template fenced so it does not become a real heading.
 
 ## 安全な境界: 2方式
 
-### 方式1 — フェンス対応の見出し走査
+### 方式1 — literal region 対応の見出し走査
 
-行を走査しながらフェンス状態を追跡し、すべてのフェンスの外にある行だけを
-見出し・境界として扱います:
+行を走査しながら literal region 状態を追跡し、frontmatter・フェンス・対応
+raw HTML block の外にある行だけを見出し・境界として扱います:
 
 - フェンスは「先頭の非空白文字（先行空白は最大3個）がバッククォート3個以上
   またはチルダ3個以上の連なり」の行で開く。
@@ -88,6 +88,22 @@ Keep the template fenced so it does not become a real heading.
   `+++` で始まり `+++` で閉じる。その中の見出し風の行は metadata/comment
   であって Markdown 節境界ではない。対応 closer が無い opener は書込み前に
   fail closed にする。
+- トップレベル・列0〜3の
+  [CommonMark 0.31.2 raw HTML block](https://spec.commonmark.org/0.31.2/#html-blocks)
+  type 1〜7 も除外する。literal-content tag
+  （`pre`/`script`/`style`/`textarea`）、comment、processing instruction、
+  declaration、CDATA、列挙 block tag、complete tag 単独行を扱う。type 6/7 は
+  空行直前または EOF で終わり、type 7 は段落を割り込まない。fence と HTML は
+  1本の排他的走査で扱い、互いの内部にある delimiter は literal data のままにする。
+  tag/attribute alphabet は ASCII のみに限定し、Unicode case-fold で似る文字を
+  ASCII tag として受理しない。
+- mutation safety のため CommonMark より意図的に厳しくする。type 1〜5 の
+  opener に explicit end condition が無ければ fail closed。対象外の
+  container/indent 文脈直後に type 7 候補があり判定が曖昧な場合も推測しない。
+  possible link reference definition + `===` で setext 終了を証明できない場合も
+  fail closed にする。複数行 link label は escape を考慮して追跡し、最初の
+  未escape `]` の直後が colon でなければ通常段落へ戻す。空行なしの単純な
+  definition + tag は inline HTML のまま。
 - 節の境界は次の**レベル1または2**の見出し。素朴形は `^##[^#]`
   （`###` を除外）で、参照実装はこれを `^ {0,3}#{1,2}([ \t]|$)` に強化
   している: H1 も境界として扱い（部の境界を置換に巻き込んで消しては
@@ -132,10 +148,10 @@ begin/end マーカー行（完全一致）の間を丸ごと置換し、begin �
 1. **ブロックは自身の `## 見出し` 行で始まる** — 見出しはマージされる内容の
    一部であり、内容と乖離しうる設定値にしない。
 2. **ブロック内の H1/H2 レベル見出しはちょうど1個** — 自身の1行目
-   （フェンス対応で数える）。H2 が2個あるブロックは次回の実行で隣の節を
+   （literal region 対応で数える）。H2 が2個あるブロックは次回の実行で隣の節を
    静かに吸収し、H1 を含むブロックは自分自身を分断する。ブロック内の
-   フェンス内 `## ...` リテラルは問題ない — カウントされない。
-3. **ターゲット内の見出しはたかだか1個**（フェンス外）。文書が既に重複を
+   フェンス/raw HTML 内 `## ...` リテラルは問題ない — カウントされない。
+3. **ターゲット内の見出しはたかだか1個**（literal region 外）。文書が既に重複を
    含んでいるなら、片方だけ「修復」してもう片方を残すのではなく、停止して
    報告する。
 4. **正規のセパレータ形状。** ブロックは末尾空行なしで保持し、後続の節との
@@ -154,6 +170,12 @@ begin/end マーカー行（完全一致）の間を丸ごと置換し、begin �
    `---`（YAML）または `+++`（TOML）なら、最初の完全一致 closer までだけを
    見出し走査から除外する。closer が無ければ metadata と通常 Markdown の
    thematic break のどちらかを推測せず停止する。
+8. **explicit-end raw HTML の曖昧さを許さない。** CommonMark では type 1〜5
+   の end condition が無い場合も EOF まで継続するが、そこへ H2 を追記すると
+   raw HTML に飲まれて冪等性が壊れる。ターゲット/ブロック双方で終端を必須に
+   する。type 7 は段落を割り込まない規則を守り、未対応 container/indent 文脈で
+   判定できない場合や、複数行 link label を含む possible-reference + setext
+   文脈なら fail closed にする。
 
 ## 検証レシピ
 
@@ -231,11 +253,13 @@ python scripts/merge_section.py TARGET.md SECTION.md --check   # ドリフト検
 `SECTION.md` が正本ブロックです: 1行目が正確な `## 見出し`。ターゲットの
 LF/CRLF スタイルと UTF-8 BOM は保持され、ターゲットが無ければ作成されます
 （空文書への追記）。壊れた入力 — ターゲット内の見出し重複・ブロック内の
-余分な見出し・どちらか一方でも未クローズのフェンス・文書先頭の未クローズ
-YAML/TOML frontmatter・CR のみの改行・スパン内の setext 見出しの疑い —
-は推測で処理せず終了コード 2 で停止します。完全一致の文書先頭 YAML
+余分な見出し・どちらか一方でも未クローズのフェンス/explicit-end raw HTML・
+曖昧な type 7 文脈・文書先頭の未クローズ YAML/TOML frontmatter・CR のみの
+改行・スパン内の setext 見出しの疑い — は推測で処理せず終了コード 2 で
+停止します。完全一致の文書先頭 YAML
 （`---` から `---` / `...`）と TOML（`+++` から `+++`）は見出し・
-フェンス状態走査から除外するため、metadata comment を置換起点にしません。
+literal region 走査から除外するため、metadata/HTML 内リテラルを置換起点に
+しません。
 改行の混在を正規化しただけのときは `normalized` / `would-normalize` と
 正直に報告し、「unchanged」とは言いません。
 
@@ -246,6 +270,7 @@ YAML/TOML frontmatter・CR のみの改行・スパン内の setext 見出しの
 | --- | --- |
 | `trap-heading-inside-fence` | フェンス内の `## ...` リテラルが範囲を終わらせない |
 | `frontmatter-heading-literal` | 文書先頭 YAML 内の疑似見出しを置換起点にしない |
+| `html-block-heading-literal` | raw HTML 内の疑似 H1/H2 が範囲を途中で切らない |
 | `append-missing-section` | 無い節はセパレータ空行1個つきで追記される |
 | `replace-existing-section` | 既存の節はその場で置換される |
 | `subheading-boundary` | `###` は節内に留まり、範囲は次の本物の `##` で終わる |
@@ -284,6 +309,11 @@ python scripts/test_merge_section.py
   チルダフェンス、backtick を含む info string の除外を含む）。特殊ケース
   （blockquote 内や深いリストインデント内のフェンス）は参照実装のスコープ
   外です。
+- raw HTML はトップレベル・列0〜3の CommonMark 0.31.2 type 1〜7を扱います。
+  container prefix、lazy continuation、4文字以上の indentation は完全解析
+  しません。その不明文脈直後の type 7 候補は拒否します。type 1〜5 は
+  CommonMark より厳しく explicit end condition を必須にします。詳細は
+  [`html-block-heading-scan-contract.md`](html-block-heading-scan-contract.md)。
 - UTF-8 かつ LF または CRLF 改行の文書のみ。CR のみ（旧 Mac）の改行は
   拒否します — バイト冪等性が破れるため。CRLF と LF が混在するファイルは
   CRLF として扱われ（CRLF が1つでもあれば CRLF）、初回に `normalized`

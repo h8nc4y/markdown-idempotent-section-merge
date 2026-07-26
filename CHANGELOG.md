@@ -8,6 +8,20 @@ The format loosely follows Keep a Changelog conventions.
 
 ### Changed
 
+- Exclude top-level, column 0–3 CommonMark 0.31.2 raw HTML block types 1–7
+  from heading and setext scans through one fence/HTML-exclusive state
+  machine. Preserve type 7's no-paragraph-interruption rule, refuse ambiguous
+  container/indent context, and require explicit end conditions for types 1–5
+  before mutation. Keep case-insensitive tag/attribute matching ASCII-only so
+  Unicode case-fold lookalikes cannot hide a real boundary or close type 1.
+  Refuse the possible-link-reference + `===` context where a partial parser
+  cannot safely decide whether type 7 may start, including CommonMark link
+  labels that span lines. Track escaped brackets and line-ending backslashes,
+  and release the possible-definition state at an unescaped `]` not followed
+  by a colon, while preserving the simple no-blank definition-plus-tag
+  paragraph rule.
+  Add full-output, apply-twice, CLI no-write, CRLF/BOM, and fence/HTML
+  interaction regressions.
 - Exclude exact document-leading YAML (`---` through `---`/`...`) and TOML
   (`+++` through `+++`) frontmatter from heading/fence scans, so metadata
   comments cannot be mistaken for the managed section. Refuse unclosed
