@@ -8,6 +8,10 @@ The format loosely follows Keep a Changelog conventions.
 
 ### Changed
 
+- Treat a managed H2 with 1–3 leading ASCII spaces outside literal regions as
+  an ambiguous identity and refuse both merge and `--check` without writing.
+  Do not auto-reindent possible list/container content; preserve 4+ space,
+  leading-tab, closing-hash, and literal-region behavior.
 - Exclude top-level, column 0–3 CommonMark 0.31.2 raw HTML block types 1–7
   from heading and setext scans through one fence/HTML-exclusive state
   machine. Preserve type 7's no-paragraph-interruption rule, refuse ambiguous

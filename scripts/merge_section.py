@@ -539,13 +539,29 @@ def boundary_indices(lines):
 
 
 def heading_occurrences(lines, heading):
-    """Indices equal to HEADING outside literal regions (space aside)."""
+    """Indices exactly equal to HEADING outside literal regions."""
     ignored_states = _markdown_region_scan(lines)[0]
     return [
         i
         for i, line in enumerate(lines)
         if not ignored_states[i] and line.rstrip() == heading
     ]
+
+
+def _indented_heading_occurrences(lines, heading, ignored_states):
+    """Indices of 1–3 ASCII-space variants of the managed heading."""
+    occurrences = []
+    for index, line in enumerate(lines):
+        if ignored_states[index]:
+            continue
+
+        # CommonMarkのATX見出しとして成立し得る1〜3 spaceだけを同一性候補にする。
+        # 4+ space、tab、閉じハッシュは正本と別物という既存契約を維持する。
+        candidate = line.rstrip()
+        leading_spaces = len(candidate) - len(candidate.lstrip(" "))
+        if 1 <= leading_spaces <= 3 and candidate[leading_spaces:] == heading:
+            occurrences.append(index)
+    return occurrences
 
 
 def _split_lines(text):
@@ -641,7 +657,24 @@ def merge(document_text, block_text):
             "explicit end condition before merging" % target_regions[3]
         )
 
-    occurrences = heading_occurrences(doc_lines, heading)
+    ignored_states = target_regions[0]
+    occurrences = [
+        index
+        for index, line in enumerate(doc_lines)
+        if not ignored_states[index] and line.rstrip() == heading
+    ]
+    indented_occurrences = _indented_heading_occurrences(
+        doc_lines,
+        heading,
+        ignored_states,
+    )
+    if indented_occurrences:
+        # list/containerを完全解析していないため、自動で列0へ移動すると文書構造を
+        # 変え得る。入力由来の見出し本文や行番号も反射せず、固定文言で拒否する。
+        raise MergeError(
+            "target contains an indented managed H2 outside literal regions; "
+            "move it to column 0, rename it, or deduplicate it before merging"
+        )
     if len(occurrences) > 1:
         raise MergeError(
             "target contains %d copies of '%s' outside literal regions; "
