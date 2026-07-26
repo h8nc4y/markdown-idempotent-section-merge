@@ -2,19 +2,43 @@
 
 ## Current goal
 
-進行中: Class Mとして、CommonMark closing-hash形式の管理対象H2を別物として
-追記できるidentity gapと、Unicode whitespaceをASCII space/tabとして削る
-block grammar gapを修正する。
+完了: CommonMark closing-hash形式の管理対象H2を別物として追記できる
+identity gapと、Unicode whitespaceをASCII space/tabとして削る
+block grammar gapをClass Mで修正し、PR #10をmainへ統合した。
 
-## Success metrics
+## Delivered
 
-- block先頭のclosing-hash H2をplain form要求で拒否する。
-- targetの0〜3 space closing-hash aliasをliteral region外だけで拒否する。
-- 通常実行 / `--check`を終了コード2・固定診断・no-writeへ揃える。
-- heading trim、blank / setext、fence closer、closing suffixをASCII space/tab
-  契約へ統一し、Unicode whitespace bytesをcontentとして保持する。
-- CRLF / BOM、既存fixture、apply-twice、3-platform CIを維持する。
-- source freeze後の独立reviewでP1 / P2 / P3を0件にする。
+- block先頭のclosing-hash H2とtargetの0〜3 space aliasを、
+  literal region外で書込み前に固定文言・終了コード2・no-writeとして拒否。
+- heading trim、blank / setext、fence closer、closing suffixを
+  ASCII space/tab契約へ統一し、Unicode whitespace bytesをcontentとして保持。
+- NBSP、EM SPACE、form feed、vertical tab、BOM、CRLF、fence、setext headingの
+  API / CLI回帰と英日契約文書、readiness検証を追加。
+- PR #10をsquash merge。mainは`37d9847`、feature commitは`077a891`。
+
+## Decisions
+
+- CommonMark 0.31.2 §4.2のblock-level closing sequenceだけを同一性候補にし、
+  inline Markdownのレンダリング結果は比較しない。
+- aliasを自動変換・削除せずfail-closedで拒否する。
+- 4+ space、先頭tab、空白で区切られない末尾`#`、closing sequence後の本文は
+  別物とする。
+- Pythonの引数なし`strip` / `rstrip`は入力由来textへ使わない。
+- public fixture / diagnosticsはsynthetic・非反射とする。
+
+## Verification
+
+- 独立review: exact freeze tree `55efd478` / patch `a822555a`、
+  P0 / P1 / P2 / P3 = 0、merge clearance取得。
+- PR CI run `30213741672`: Windows / Ubuntu / macOS 15すべてSUCCESS。
+- main CI run `30213997398`: Windows / Ubuntu / macOS 15すべてSUCCESS。
+- post-main Python: 140 PASS / 14 skip、py_compile PASS。
+- post-main OSS readiness: PS7 / PS5.1ともPASS。
+- post-main private-marker self-test: PS7 173.9秒 / PS5.1 117.7秒でPASS。
+  repository scanも両engineでPASS。
+- post-main Gitleaks: history 16 commits / 736.90 KB、worktree 972.28 KB、
+  0 leaks。Semgrep: Python 2 files / 187 rules / 0 findings。
+- main `37d9847`とorigin/main一致、tracked tree cleanを確認。
 
 ## Key files
 
@@ -23,45 +47,8 @@ block grammar gapを修正する。
 - `docs/closing-hash-managed-heading-contract.md`
 - `docs/commonmark-ascii-whitespace-contract.md`
 - `README.md` / `SKILL.md` / `docs/SKILL.ja.md`
-- `CHANGELOG.md` / `scripts/validate-oss-readiness.ps1`
-
-## Decisions
-
-- CommonMark 0.31.2 §4.2のblock-level closing sequenceだけを同一性候補にする。
-  inline Markdownのレンダリング結果までは比較しない。
-- aliasを自動変換・削除せず、書込み前に固定文言で拒否する。
-- 4+ space、先頭tab、空白で区切られない末尾`#`、closing sequence後に
-  本文が続く行は既存どおり別物とする。
-- CommonMark block grammarのwhitespaceはASCII space/tabに限定する。
-  Pythonの引数なし`strip` / `rstrip`は入力由来textへ使わない。
-- NBSP、EM SPACE、form feed、vertical tabは自動正規化せずcontentとして保持する。
-- public-facing fixture / diagnosticsはsynthetic・非反射とする。
-
-## Current verification
-
-- main `1970265`とorigin/main一致、tracked tree clean、open issue / PR 0、
-  最新main CIはWindows / Ubuntu / macOS 15がSUCCESSと確認して開始した。
-- 実装前にAPI / CLI回帰で11 failureを取得した。
-- 最小実装後、closing-hash / indented identity / CLI対象testはPASS。
-- Python full suiteはUnicode修正後140件PASS / 14件skip。
-  py_compile、diff checkがPASS。
-- OSS readinessとrepository private-marker scanはPS7 / PS5.1ともPASS。
-- private-marker self-testはUnicode修正後PS7 164.5秒 /
-  PS5.1 111.5秒でPASS。repository scanも両engineでPASS。
-- Gitleaksは履歴663.75 KBとworktree 967.28 KBで0 leaks。
-- Semgrep p/python + p/secretsはPython 2 files / 187 rules / 0 findings。
-- 初回freeze `266c519d`の独立reviewはP1=0 / P2=1 / P3=0。
-  引数なしUnicode `strip` / `rstrip`が別heading、末尾content、setext、
-  fence closer、closing suffixを誤判定する再現を確認し、clearanceは保留。
-- NBSP単独回帰6件を実装前に全FAILで取得。ASCII-only helper実装後、
-  NBSP / U+2003 / U+000C / U+000BのAPI 9観点とBOM+CRLF CLI 3観点はPASS。
-- Unicode修正後のPython full suite、readiness / scanner両engine、
-  Gitleaks / Semgrep再scanはPASS。
-- 新freeze再review、commit、push、
-  PR / CI / merge、post-mainは未実施。
 
 ## Next steps
 
-1. exact freezeを独立reviewへ渡す。
-2. P1 / P2 / P3 = 0後にcommit / push / PR / CI / mergeを行う。
-3. post-main検証、branch cleanup、中央dev-log同期で完了状態へ圧縮する。
+1. main上でopen issue / PR、CI、TODO、既知制約を再確認する。
+2. 安全で価値の高い次のClass S/M改善を選び、別branchで進める。
