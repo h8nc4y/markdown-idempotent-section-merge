@@ -2,8 +2,8 @@
 
 ## Current goal
 
-Class M: READMEで案内するmacOS / POSIX経路を、GitHub-hosted `macos-15`
-matrixで継続検証する。
+完了: Class MとしてREADMEで案内するmacOS / POSIX経路を、
+GitHub-hosted `macos-15` matrixで継続検証する。
 
 ## Success metrics
 
@@ -86,9 +86,17 @@ matrixで継続検証する。
 - Gitleaks 910.45 KB / 0 leaks、Semgrep p/secretsは変更PowerShell 2 files /
   36 rules / 0 findings。変更6 filesはstrict UTF-8、LF、意図したBOMだけ、
   NUL / FF / U+FFFD / trailing whitespaceなし。
+- fix commit `454371f`後のPR run `30210448211`はWindows / Ubuntu /
+  macOS 15の全jobがSUCCESS。独立最終reviewはP1 / P2 / P3 = 0。
+- PR #8をsquash mergeし、main `b88def8`へ同期。post-main run
+  `30210675742`も3 platformすべてSUCCESS。
+- post-main localはprivate-marker self-testがPS7 193.1秒 / PS5.1 126.1秒、
+  readiness / repository scanが両host、Python 120件 / 14 skipでPASS。
+  HEADとorigin/main一致、tracked tree clean、local / remote topic branch削除済み。
+- deploy、release、credential、実データ、外部API、費用発生操作は未実施。
 
 ## Next steps
 
-scanner修正後のPS7 / PS5.1全gate、security / text hygiene、独立reviewを再実行し、
-PR #8へ追加commitをpushする。native macOSを含む全jobs成功後だけmerge /
-post-main / cleanupする。
+本taskの残作業はない。次回はbacklog / issue / CIから次のsafe taskを選ぶ。
+workflow、runner image、PowerShell、Git root判定を変更する場合は、
+同じ3 platform matrixとmalformed root probe回帰を再実行する。
