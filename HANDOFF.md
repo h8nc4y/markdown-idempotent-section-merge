@@ -2,101 +2,66 @@
 
 ## Current goal
 
-完了: Class MとしてREADMEで案内するmacOS / POSIX経路を、
-GitHub-hosted `macos-15` matrixで継続検証する。
+進行中: Class Mとして、CommonMark closing-hash形式の管理対象H2を別物として
+追記できるidentity gapと、Unicode whitespaceをASCII space/tabとして削る
+block grammar gapを修正する。
 
 ## Success metrics
 
-- Windows / Ubuntuを維持して`macos-15`をmatrixへ追加する。
-- macOSでPS7 readiness、merge tests、private-marker self-test / scan、
-  committed-tree whitespaceを同じ25分bound内で実行する。
-- Windows PowerShell 5.1 step、action SHA、scanner timeout、検出範囲を維持する。
-- native macOSで実測したroot alias誤判定だけを、Gitのworktree / prefix契約で修正する。
-- native macOS実測はPRとpost-main runで取得する。
+- block先頭のclosing-hash H2をplain form要求で拒否する。
+- targetの0〜3 space closing-hash aliasをliteral region外だけで拒否する。
+- 通常実行 / `--check`を終了コード2・固定診断・no-writeへ揃える。
+- heading trim、blank / setext、fence closer、closing suffixをASCII space/tab
+  契約へ統一し、Unicode whitespace bytesをcontentとして保持する。
+- CRLF / BOM、既存fixture、apply-twice、3-platform CIを維持する。
+- source freeze後の独立reviewでP1 / P2 / P3を0件にする。
 
 ## Key files
 
-- `.github/workflows/validate.yml`
-- `scripts/validate-oss-readiness.ps1`
-- `scripts/scan-private-markers.ps1`
-- `scripts/test-scan-private-markers.ps1`
-- `docs/macos-ci-contract.md`
-- `README.md` / `CHANGELOG.md`
+- `scripts/merge_section.py`
+- `scripts/test_merge_section.py`
+- `docs/closing-hash-managed-heading-contract.md`
+- `docs/commonmark-ascii-whitespace-contract.md`
+- `README.md` / `SKILL.md` / `docs/SKILL.ja.md`
+- `CHANGELOG.md` / `scripts/validate-oss-readiness.ps1`
 
 ## Decisions
 
-- `macos-latest`の将来image切替を避け、契約するnative imageを`macos-15`へ固定する。
-- macOS固有失敗はnative runの実測から修正し、timeoutや検出境界を先回りで緩めない。
-- rootの文字列表現同士は比較しない。1回のbounded Git probeで
-  `--is-inside-work-tree=true`かつ`--show-prefix`空を厳密に要求し、祖先aliasを
-  許容しながらrepo subdirectory / bare / Git directoryを拒否する。
-- 直前taskのPR #7はsquash merge `486eace`、post-main run `30204599205`
-  attempt 2でWindows / Ubuntu SUCCESS、main同期・cleanup済み。
+- CommonMark 0.31.2 §4.2のblock-level closing sequenceだけを同一性候補にする。
+  inline Markdownのレンダリング結果までは比較しない。
+- aliasを自動変換・削除せず、書込み前に固定文言で拒否する。
+- 4+ space、先頭tab、空白で区切られない末尾`#`、closing sequence後に
+  本文が続く行は既存どおり別物とする。
+- CommonMark block grammarのwhitespaceはASCII space/tabに限定する。
+  Pythonの引数なし`strip` / `rstrip`は入力由来textへ使わない。
+- NBSP、EM SPACE、form feed、vertical tabは自動正規化せずcontentとして保持する。
+- public-facing fixture / diagnosticsはsynthetic・非反射とする。
 
 ## Current verification
 
-- readinessへ`macos-15`静的契約を先行追加し、既存workflowに対するREDを実測。
-- workflow / docs / living handoffを最小変更済み。
-- merge tests 120件 / 14 skip、py_compile、workflow YAML parseがPASS。
-- OSS readiness、private-marker self-test / repository scanはPS7 / PS5.1ともPASS。
-- Gitleaks 13 commits / 624.06 KB / 0 leaks、diff checkがPASS。変更sourceは
-  PowerShell / YAML / Markdownのみのため、global Semgrepに適用対象なし。
-- 初回freezeの独立reviewで、workflow全体regexがblock scalar decoyと
-  matrix未接続`runs-on`を合格させるP2を再現した。
-- readinessをvalidate jobのindent構造検査へ変更し、runs-on固定化、
-  matrix / PS5.1 conditionのblock scalar decoyをin-memory mutationで拒否。
-- 再reviewで、`validate`のroot `jobs`所属未確認と異値duplicate keyのP2を再現。
-  次のroot keyで`jobs`をboundし、contract keyを値に関係なく各1件へ固定した。
-- 3回目reviewでquoted key、colon前空白、root `jobs`重複による実効YAML上書きの
-  P2を再現。root / contract mappingをcanonical simple keyへ限定し、jobs key
-  自体の重複と1 / 3-space親へのdecoy nestもfail closedにした。
-- 未閉じmultiline quoted scalar内へ正しいjob文字列を退避すると旧line matcherが
-  合格する追加adversarialを実測し、job値とblock本文も既知の閉じた形へ固定した。
-- 4回目reviewでrequired PS7 step削除とroot `name` multiline scalarによる
-  workflow全体退避のP2を再現。trigger / permission preludeと、全required stepの
-  name + uses / shell + run/bodyをcomment/blank除外後のexact順序として固定した。
-- 各step削除、readiness/reference入替、root command decoy、root/validate
-  multiline scalarをreadiness自身のmutationで拒否する。
-- 自己reviewで先行jobのmultiline scalarがvalidate text全体を飲むP2も再現。
-  root keyを`name` / `on` / `permissions` / `jobs`、direct jobを`validate`
-  だけへ固定し、unexpected root / sibling jobもfail closedにした。root commentは
-  positive mutationで受理する。
-- PS7 / PS5.1で正本・CRLF・root / validate comment・blankを受理し、plain / quoted / spaced /
-  explicit / tagged key、inline root重複、非canonical親を含むmutationを拒否。
-- 5回目reviewでraw line adjacencyによるcomment / blankのfalse-negativeと、
-  root scalar自己変異の非anchored全置換を再現。全補助検査をsemantic line列へ
-  統一し、root先頭行だけを置換するvalid YAML mutationへ修正した。PyYAMLで
-  semantic root=`name`のみ / jobsなしを確認し、validatorは拒否した。
-- 第6 exact freeze `a9f4b6f7`は独立review P1 / P2 / P3 = 0。組込み23変異、
-  追加YAML adversarial、comment / blank正例も合格した。
-- commit `027b831`をpushし、PR #8 / run `30208443602`を実行。Ubuntu / Windowsは
-  SUCCESS、macOS 15だけprivate-marker self-testで
-  `integrity: git-root-mismatch`となった。run logには絶対pathがないため具体的な
-  2表記は推定だが、Gitのworktree canonicalizationとWindows PowerShell 7の
-  `\\?\`同型回帰で、lexical root比較が原因となる機構を切り分けた。
-- scannerをexact 2-record probeへ変更し、通常root scanはPS7 / PS5.1でPASS。
-  Windows PowerShell 7のextended-length alias正例、repo subdirectory、
-  non-worktree、non-empty prefixの負例をself-testへ追加した。
-- 独立review P3を受け、missing final LF、extra record、NUL、invalid UTF-8、
-  case / whitespace drift、root link、`.git` directory、bare repositoryの
-  public-entrypoint負例を追加した。修正後のprivate-marker self-testは
-  PS7 176.7秒 / PS5.1 118.0秒でPASS。
-  readiness / repository scanも両hostでPASSし、Python 120件 / 14 skip、
-  workflow YAML parse、diff checkがPASS。
-- Gitleaks 910.45 KB / 0 leaks、Semgrep p/secretsは変更PowerShell 2 files /
-  36 rules / 0 findings。変更6 filesはstrict UTF-8、LF、意図したBOMだけ、
-  NUL / FF / U+FFFD / trailing whitespaceなし。
-- fix commit `454371f`後のPR run `30210448211`はWindows / Ubuntu /
-  macOS 15の全jobがSUCCESS。独立最終reviewはP1 / P2 / P3 = 0。
-- PR #8をsquash mergeし、main `b88def8`へ同期。post-main run
-  `30210675742`も3 platformすべてSUCCESS。
-- post-main localはprivate-marker self-testがPS7 193.1秒 / PS5.1 126.1秒、
-  readiness / repository scanが両host、Python 120件 / 14 skipでPASS。
-  HEADとorigin/main一致、tracked tree clean、local / remote topic branch削除済み。
-- deploy、release、credential、実データ、外部API、費用発生操作は未実施。
+- main `1970265`とorigin/main一致、tracked tree clean、open issue / PR 0、
+  最新main CIはWindows / Ubuntu / macOS 15がSUCCESSと確認して開始した。
+- 実装前にAPI / CLI回帰で11 failureを取得した。
+- 最小実装後、closing-hash / indented identity / CLI対象testはPASS。
+- Python full suiteはUnicode修正後140件PASS / 14件skip。
+  py_compile、diff checkがPASS。
+- OSS readinessとrepository private-marker scanはPS7 / PS5.1ともPASS。
+- private-marker self-testはUnicode修正後PS7 164.5秒 /
+  PS5.1 111.5秒でPASS。repository scanも両engineでPASS。
+- Gitleaksは履歴663.75 KBとworktree 967.28 KBで0 leaks。
+- Semgrep p/python + p/secretsはPython 2 files / 187 rules / 0 findings。
+- 初回freeze `266c519d`の独立reviewはP1=0 / P2=1 / P3=0。
+  引数なしUnicode `strip` / `rstrip`が別heading、末尾content、setext、
+  fence closer、closing suffixを誤判定する再現を確認し、clearanceは保留。
+- NBSP単独回帰6件を実装前に全FAILで取得。ASCII-only helper実装後、
+  NBSP / U+2003 / U+000C / U+000BのAPI 9観点とBOM+CRLF CLI 3観点はPASS。
+- Unicode修正後のPython full suite、readiness / scanner両engine、
+  Gitleaks / Semgrep再scanはPASS。
+- 新freeze再review、commit、push、
+  PR / CI / merge、post-mainは未実施。
 
 ## Next steps
 
-本taskの残作業はない。次回はbacklog / issue / CIから次のsafe taskを選ぶ。
-workflow、runner image、PowerShell、Git root判定を変更する場合は、
-同じ3 platform matrixとmalformed root probe回帰を再実行する。
+1. exact freezeを独立reviewへ渡す。
+2. P1 / P2 / P3 = 0後にcommit / push / PR / CI / mergeを行う。
+3. post-main検証、branch cleanup、中央dev-log同期で完了状態へ圧縮する。

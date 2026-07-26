@@ -164,17 +164,18 @@ with the same fence-aware scan.
 Enforce these before and after every merge; they make "replace or append"
 well defined:
 
-1. **The block starts with its own `## Heading` line** — the heading is
+1. **The block starts with its own plain `## Heading` line** — the heading is
    part of the merged content, not configuration that can drift from it.
+   A CommonMark closing-hash sequence is not canonical here.
 2. **Exactly one H1/H2-level heading inside the block** — its own first
    line (literal-region-aware count). A block with a second H2 would silently
    absorb the next section on the following run; a block with an H1 would
    cut itself in two. Fenced or raw-HTML `## ...` literals inside the block
    are fine — they do not count.
-3. **At most one copy of the heading in the target** (outside literal
-   regions).
-   If the document already contains duplicates, stop and report instead of
-   "fixing" one of them and leaving the other.
+3. **At most one unambiguous copy of the heading in the target** (outside
+   literal regions). If the document already contains duplicates or a
+   1–3-space / closing-hash alias of the managed H2, stop and report instead
+   of "fixing" one form and leaving another.
 4. **A canonical separator shape.** Store the block with no trailing blank
    lines; write exactly one blank line between the block and a following
    section. Reading range and writing shape then converge to the same
@@ -200,6 +201,12 @@ well defined:
    no-paragraph-interruption rule and fail closed when an unsupported
    container/indented or possible-reference-plus-setext context, including a
    multi-line link label, makes that decision ambiguous.
+9. **ASCII-only block whitespace.** Blank lines, ATX heading trim and closing
+   sequences, setext context, and fence closers use ASCII space/tab exactly as
+   CommonMark 0.31.2 specifies. NBSP, EM SPACE, form feed, vertical tab, and
+   other Unicode whitespace remain content instead of being silently stripped.
+   See
+   [`docs/commonmark-ascii-whitespace-contract.md`](docs/commonmark-ascii-whitespace-contract.md).
 
 ## Verification Recipe
 
@@ -269,13 +276,17 @@ uses a private recovery backup; ambiguous partial failures raise
 state cannot prove either outcome. Cleanup checks identity immediately before
 unlink, but portable path-based unlink still has a final name-swap window;
 private unpredictable names and fail-closed artifact retention mitigate it.
-Malformed input — a duplicate heading in the target, an extra heading in the
-block, an unclosed fence or explicit-end raw HTML block in either, ambiguous
-type 7 context, unclosed leading YAML/TOML frontmatter, CR-only line endings,
-or a possible setext heading inside the span — exits with code 2 instead of
-guessing. Exact leading YAML (`---` through `---` or `...`) and TOML (`+++`
-through `+++`) frontmatter plus the supported raw HTML profile are excluded
-from heading scans, so literal headings cannot become replacement anchors.
+Malformed input — a duplicate or syntactically aliased managed heading in the
+target, a closing-hash or extra heading in the block, an unclosed fence or
+explicit-end raw HTML block in either, ambiguous type 7 context, unclosed
+leading YAML/TOML frontmatter, CR-only line endings, or a possible setext
+heading inside the span — exits with code 2 instead of guessing. Exact leading
+YAML (`---` through `---` or `...`) and TOML (`+++` through `+++`) frontmatter
+plus the supported raw HTML profile are excluded from heading scans, so
+literal headings cannot become replacement anchors.
+All block-grammar trimming is limited to ASCII space/tab; Unicode whitespace
+bytes remain content and cannot be normalized into a heading, blank line,
+closing-hash sequence, or fence closer.
 When only mixed line endings need normalizing, the action is reported honestly
 as `normalized` / `would-normalize`, never as "unchanged".
 
@@ -311,9 +322,11 @@ the scanner back into the trap, these tests fail first.
 ## Limitations
 
 - The canonical heading itself must be a plain `## Name` at column 0.
-  Closing-hash headings (`## X ##`) do act as headings and boundaries, but
-  matching is by exact line — `## X ##` and `## X` are different headings
-  here, so keep the managed heading in plain form.
+  A closing-hash block heading is rejected. A matching closing-hash form
+  (`## X ##`) outside literal regions is an ambiguous managed-heading
+  identity, so merge and `--check` refuse without writing. The reference does
+  not rewrite or deduplicate it automatically. See
+  [`docs/closing-hash-managed-heading-contract.md`](docs/closing-hash-managed-heading-contract.md).
 - A matching H2 indented by 1–3 ASCII spaces outside literal regions is an
   ambiguous managed-heading identity. Merge and `--check` both refuse it
   without writing; the reference never auto-reindents possible list/container

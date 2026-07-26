@@ -145,15 +145,16 @@ begin/end マーカー行（完全一致）の間を丸ごと置換し、begin �
 すべてのマージの前後でこれらを強制します。「置換 or 追記」が well-defined に
 なるのはこの条件下です:
 
-1. **ブロックは自身の `## 見出し` 行で始まる** — 見出しはマージされる内容の
-   一部であり、内容と乖離しうる設定値にしない。
+1. **ブロックは自身の素の `## 見出し` 行で始まる** — 見出しはマージされる
+   内容の一部であり、内容と乖離しうる設定値にしない。CommonMark の
+   closing-hash sequence はここでは正本にしない。
 2. **ブロック内の H1/H2 レベル見出しはちょうど1個** — 自身の1行目
    （literal region 対応で数える）。H2 が2個あるブロックは次回の実行で隣の節を
    静かに吸収し、H1 を含むブロックは自分自身を分断する。ブロック内の
    フェンス/raw HTML 内 `## ...` リテラルは問題ない — カウントされない。
-3. **ターゲット内の見出しはたかだか1個**（literal region 外）。文書が既に重複を
-   含んでいるなら、片方だけ「修復」してもう片方を残すのではなく、停止して
-   報告する。
+3. **ターゲット内の曖昧でない見出しはたかだか1個**（literal region 外）。
+   文書が既に重複、1〜3 space版、closing-hash版を含んでいるなら、片方だけ
+   「修復」してもう片方を残すのではなく、停止して報告する。
 4. **正規のセパレータ形状。** ブロックは末尾空行なしで保持し、後続の節との
    間には空行ちょうど1個を書く。読み取り範囲と書き込み形状が同じ正規形に
    収束することが、2回目の実行を no-op にする。
@@ -176,6 +177,11 @@ begin/end マーカー行（完全一致）の間を丸ごと置換し、begin �
    する。type 7 は段落を割り込まない規則を守り、未対応 container/indent 文脈で
    判定できない場合や、複数行 link label を含む possible-reference + setext
    文脈なら fail closed にする。
+9. **block whitespaceはASCII限定。** blank line、ATX headingのtrim /
+   closing sequence、setext文脈、fence closerは、CommonMark 0.31.2どおり
+   ASCII space / tabだけを使う。NBSP、EM SPACE、form feed、vertical tabなどを
+   暗黙に削って別構造へ変えない。詳細は
+   [`commonmark-ascii-whitespace-contract.md`](commonmark-ascii-whitespace-contract.md)。
 
 ## 検証レシピ
 
@@ -292,10 +298,11 @@ python scripts/test_merge_section.py
 
 ## 制限事項
 
-- 正本節の見出し自体は列0の素の `## Name` 形式であること。閉じハッシュ
-  形式（`## X ##`）も見出し・境界としては機能しますが、マッチングは行の
-  完全一致 — `## X ##` と `## X` はここでは別の見出しです。管理対象の
-  見出しは素の形式に保ってください。
+- 正本節の見出し自体は列0の素の `## Name` 形式であること。block 側の
+  閉じハッシュ形式は拒否します。literal region 外に同じ見出し本文の
+  `## X ##` があれば同一性が曖昧なため、通常実行と `--check` の双方を
+  no-write で拒否し、自動変換や重複削除はしません。詳細は
+  [`closing-hash-managed-heading-contract.md`](closing-hash-managed-heading-contract.md)。
 - literal region 外で同名 H2 に1〜3個の ASCII spaceが付いている場合は、
   管理対象見出しの同一性が曖昧なため、通常実行と `--check` の双方をno-writeで
   拒否します。list/containerかもしれない内容を自動reindentしません。詳細は
