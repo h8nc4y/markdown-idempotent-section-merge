@@ -18,8 +18,9 @@
 - 列 0 の候補が複数あれば、従来どおり重複として拒否する。
 - 1〜3 space の行を自動的に列 0 へ移動しない。list/container 文脈を部分的に
   推測して文書構造を変えないためである。
-- 4 個以上の space、先頭 tab、閉じハッシュ付き H2 は、列 0 の素の正本 H2 と
-  同一視しない。
+- 4 個以上の space と先頭 tab は、列 0 の素の正本 H2 と同一視しない。
+- 閉じハッシュ付き H2 は別の同一性契約で fail closed にする。詳細は
+  [`closing-hash-managed-heading-contract.md`](closing-hash-managed-heading-contract.md)。
 - frontmatter、fence、raw HTML 内の同じ文字列はリテラルであり、候補に数えない。
 
 ## 検証
@@ -27,5 +28,6 @@
 - 1、2、3 space の単独候補を API で拒否する。
 - 列 0 + インデント、複数インデント、list/container 風の候補を拒否する。
 - 通常 CLI と `--check` が同じ固定エラーを返し、元 bytes を維持する。
-- 4 space、tab、閉じハッシュ、literal region 内の文字列は過剰拒否しない。
+- 4 space、tab、閉じハッシュではない末尾 `#`、literal region 内の文字列は
+  過剰拒否しない。
 - 既存 fixture、apply-twice、LF/CRLF/BOM、OSS readiness、security scan を維持する。

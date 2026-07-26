@@ -285,6 +285,11 @@ frontmatter・fence・CommonMark HTML type 1〜7 を排他的に走査します�
   exact matching closer. The scanner ignores heading literals inside a closed
   block and fails closed on an unclosed one rather than confusing metadata
   with the managed section.
+- CommonMark block whitespace is ASCII space/tab only. Unicode whitespace such
+  as NBSP or EM SPACE remains content in heading, blank-line, setext, fence,
+  and closing-hash decisions; it is never silently trimmed into another
+  structure. See
+  [`docs/commonmark-ascii-whitespace-contract.md`](docs/commonmark-ascii-whitespace-contract.md).
 - When only mixed line endings are normalized, the tool reports
   `normalized` / `would-normalize` — it never claims "unchanged" while
   rewriting bytes.
@@ -310,9 +315,11 @@ frontmatter・fence・CommonMark HTML type 1〜7 を排他的に走査します�
 
 ## Limitations
 
-- The managed heading must be a plain `## Name` at column 0 (closing-hash
-  headings work as boundaries but match by exact line, so `## X ##` and
-  `## X` are different headings).
+- The managed heading must be a plain `## Name` at column 0. A closing-hash
+  block heading is rejected, and a matching `## Name ##` form outside literal
+  regions is treated as an ambiguous identity: both merge and `--check` refuse
+  without writing. See
+  [`docs/closing-hash-managed-heading-contract.md`](docs/closing-hash-managed-heading-contract.md).
 - A matching managed H2 indented by 1–3 ASCII spaces outside literal regions
   is treated as an ambiguous identity and makes both merge and `--check`
   refuse without writing. The tool does not auto-reindent possible list or

@@ -8,6 +8,16 @@ The format loosely follows Keep a Changelog conventions.
 
 ### Changed
 
+- Refuse a CommonMark closing-hash alias of the managed H2 before either
+  merge or `--check` can append a semantic duplicate. Require the incoming
+  block heading to use the plain form, include 0–3-space target aliases,
+  ignore literal regions, preserve CRLF/BOM bytes on refusal, and keep
+  non-closing hash text outside this bounded identity rule.
+- Limit every CommonMark block-whitespace decision to ASCII space/tab instead
+  of Python's broader Unicode `strip` semantics. Preserve NBSP, EM SPACE,
+  form feed, and vertical tab as heading/line content; do not accept them as
+  fence-closing or closing-hash suffix whitespace; and keep BOM/CRLF bytes
+  unchanged on fail-closed CLI paths.
 - Validate the documented POSIX path on pinned GitHub-hosted macOS 15 in
   addition to Windows and Ubuntu, without changing the existing 25-minute
   job bound, immutable action revisions, or Windows PowerShell 5.1 scope.

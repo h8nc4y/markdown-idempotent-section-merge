@@ -122,7 +122,7 @@ class FixtureMergeTests(unittest.TestCase):
         for fixture in FIXTURE_NAMES:
             with self.subTest(fixture=fixture):
                 section = load(fixture, "section.md")
-                heading = section.split("\n", 1)[0].rstrip()
+                heading = section.split("\n", 1)[0].rstrip(" \t")
                 merged, _ = merge_section.merge(load(fixture, "input.md"), section)
                 self.assertEqual(h2_count(merged, heading), 1)
 
@@ -263,11 +263,13 @@ class IndentedManagedHeadingIdentityTests(unittest.TestCase):
                 with self.assertRaisesRegex(merge_section.MergeError, self.error):
                     merge_section.merge(original, self.block)
 
-    def test_four_spaces_tab_and_closing_hash_are_not_same_identity(self):
+    def test_four_spaces_tab_and_nonclosing_hash_text_are_not_same_identity(self):
         lines = (
             "    ## Managed\n"
             "\t## Managed\n"
-            "## Managed ##\n"
+            "## Managed#\n"
+            "## Managed \\#\n"
+            "## Managed ### body\n"
         )
         merged, action = merge_section.merge(lines, self.block)
         self.assertEqual(action, "appended")
@@ -290,6 +292,250 @@ class IndentedManagedHeadingIdentityTests(unittest.TestCase):
         merged, action = merge_section.merge(document, self.block)
         self.assertEqual(action, "appended")
         self.assertEqual(h2_count(merged, "## Managed"), 1)
+
+
+class ClosingHashManagedHeadingIdentityTests(unittest.TestCase):
+    """CommonMarkのclosing-hash variantを同じ管理対象H2として安全側に扱う。"""
+
+    block = "## Managed\n\nCanonical body.\n"
+    alias_error = "closing-hash managed H2 alias outside literal regions"
+    block_error = "block heading must use plain form without a closing hash sequence"
+
+    def test_closing_hash_candidates_fail_closed(self):
+        cases = (
+            ("## Managed #", self.block),
+            ("## Managed ##   ", self.block),
+            (" ## Managed ###", self.block),
+            ("   ## Managed ########\t", self.block),
+            ("## C# ##", "## C#\n\nCanonical body.\n"),
+        )
+        for candidate, block in cases:
+            with self.subTest(candidate=candidate):
+                original = "%s\n\nOld body.\n" % candidate
+                with self.assertRaisesRegex(
+                    merge_section.MergeError,
+                    self.alias_error,
+                ):
+                    merge_section.merge(original, block)
+
+    def test_canonical_plus_alias_and_multiple_aliases_fail_closed(self):
+        documents = {
+            "canonical-plus-alias": (
+                "## Managed\n\nOld canonical.\n\n"
+                "## Managed ##\n\nOld semantic duplicate.\n"
+            ),
+            "multiple-aliases": (
+                "## Managed #\n\nFirst.\n\n"
+                "  ## Managed ####\n\nSecond.\n"
+            ),
+        }
+        for label, original in documents.items():
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(
+                    merge_section.MergeError,
+                    self.alias_error,
+                ):
+                    merge_section.merge(original, self.block)
+
+    def test_fixed_alias_error_does_not_reflect_managed_heading(self):
+        marker = "SYNTHETIC-CLOSING-HASH-MARKER"
+        with self.assertRaises(merge_section.MergeError) as caught:
+            merge_section.merge(
+                "## %s ##\n" % marker,
+                "## %s\n\nCanonical body.\n" % marker,
+            )
+        self.assertIn(self.alias_error, str(caught.exception))
+        self.assertNotIn(marker, str(caught.exception))
+
+    def test_literal_region_candidates_are_not_aliases(self):
+        document = (
+            "---\n"
+            "example: |\n"
+            "  ## Managed ##\n"
+            "---\n\n"
+            "```text\n"
+            "## Managed ###\n"
+            "```\n\n"
+            "<!--\n"
+            " ## Managed #\n"
+            "-->\n"
+        )
+        merged, action = merge_section.merge(document, self.block)
+        self.assertEqual(action, "appended")
+        self.assertTrue(merged.startswith(document))
+        self.assertEqual(h2_count(merged, "## Managed"), 1)
+
+    def test_closing_hash_block_heading_is_rejected(self):
+        for heading in ("## Managed #", "## Managed ###   "):
+            with self.subTest(heading=heading):
+                with self.assertRaisesRegex(
+                    merge_section.MergeError,
+                    self.block_error,
+                ):
+                    merge_section.merge(
+                        "# Synthetic document\n",
+                        "%s\n\nCanonical body.\n" % heading,
+                    )
+
+    def test_nonclosing_content_hash_in_block_remains_supported(self):
+        merged, action = merge_section.merge(
+            "# Synthetic document\n",
+            "## C#\n\nCanonical body.\n",
+        )
+        self.assertEqual(action, "appended")
+        self.assertTrue(merged.endswith("## C#\n\nCanonical body.\n"))
+
+
+class AsciiWhitespaceGrammarTests(unittest.TestCase):
+    """CommonMarkのblock文法でspace/tab以外を勝手にtrimしない契約。"""
+
+    block = "## Managed\n\nCanonical body.\n"
+    non_ascii_whitespace = {
+        "nbsp": "\u00a0",
+        "em-space": "\u2003",
+        "form-feed": "\u000c",
+        "vertical-tab": "\u000b",
+    }
+
+    def test_ascii_helpers_accept_only_space_and_tab(self):
+        for text in ("", " ", "\t", " \t "):
+            with self.subTest(text=repr(text)):
+                self.assertTrue(merge_section._is_ascii_blank(text))
+        for label, whitespace in self.non_ascii_whitespace.items():
+            with self.subTest(label=label):
+                self.assertFalse(merge_section._is_ascii_blank(whitespace))
+                self.assertEqual(
+                    merge_section._rstrip_ascii_whitespace(
+                        "content%s" % whitespace
+                    ),
+                    "content%s" % whitespace,
+                )
+
+    def test_non_ascii_whitespace_after_target_heading_is_not_plain(self):
+        for label, whitespace in self.non_ascii_whitespace.items():
+            for indent in ("", "  "):
+                with self.subTest(label=label, indent=len(indent)):
+                    original = (
+                        "# Synthetic document\n\n"
+                        "%s## Managed%s\n\nDifferent section body.\n"
+                        % (indent, whitespace)
+                    )
+                    merged, action = merge_section.merge(original, self.block)
+                    self.assertEqual(action, "appended")
+                    self.assertTrue(merged.startswith(original))
+                    self.assertTrue(merged.endswith(self.block))
+
+    def test_public_occurrence_scan_does_not_trim_unicode_whitespace(self):
+        for label, whitespace in self.non_ascii_whitespace.items():
+            with self.subTest(label=label):
+                self.assertEqual(
+                    merge_section.heading_occurrences(
+                        ["## Managed%s" % whitespace],
+                        "## Managed",
+                    ),
+                    [],
+                )
+
+    def test_non_ascii_whitespace_after_block_heading_is_not_trimmed(self):
+        for label, whitespace in self.non_ascii_whitespace.items():
+            with self.subTest(label=label):
+                original = "## Managed\n\nExisting plain section.\n"
+                block = "## Managed%s\n\nDifferent section body.\n" % whitespace
+                merged, action = merge_section.merge(original, block)
+                self.assertEqual(action, "appended")
+                self.assertTrue(merged.startswith(original))
+                self.assertTrue(merged.endswith(block))
+
+    def test_non_ascii_whitespace_only_trailing_line_is_preserved(self):
+        for label, whitespace in self.non_ascii_whitespace.items():
+            with self.subTest(label=label, location="target"):
+                original = "# Synthetic document\n\n%s\n" % whitespace
+                merged, action = merge_section.merge(original, self.block)
+                self.assertEqual(action, "appended")
+                self.assertTrue(merged.startswith(original))
+                self.assertIn("%s\n\n## Managed\n" % whitespace, merged)
+
+            with self.subTest(label=label, location="block"):
+                block = "## Managed\n\nCanonical body.\n%s\n" % whitespace
+                merged, action = merge_section.merge(
+                    "# Synthetic document\n",
+                    block,
+                )
+                self.assertEqual(action, "appended")
+                self.assertTrue(merged.endswith(block))
+
+    def test_non_ascii_whitespace_setext_heading_is_rejected(self):
+        for label, whitespace in self.non_ascii_whitespace.items():
+            with self.subTest(label=label):
+                original = (
+                    "## Managed\n\nOld body.\n\n"
+                    "%s\n---\n\nProtected tail.\n\n"
+                    "## Next\n\nKeep.\n" % whitespace
+                )
+                with self.assertRaisesRegex(
+                    merge_section.MergeError,
+                    "possible setext heading",
+                ):
+                    merge_section.merge(original, self.block)
+
+    def test_non_ascii_whitespace_does_not_close_target_fence(self):
+        for label, whitespace in self.non_ascii_whitespace.items():
+            for fence_kind, opener, closer in (
+                ("backtick", "```text", "```"),
+                ("tilde", "~~~ text", "~~~"),
+            ):
+                with self.subTest(label=label, fence=fence_kind):
+                    original = (
+                        "## Managed\n\nOld body.\n\n"
+                        "%s\n"
+                        "literal\n"
+                        "%s%s\n"
+                        "# Protected inside the unclosed fence\n"
+                        % (opener, closer, whitespace)
+                    )
+                    with self.assertRaisesRegex(
+                        merge_section.MergeError,
+                        "target ends inside an unclosed code fence",
+                    ):
+                        merge_section.merge(original, self.block)
+
+    def test_non_ascii_whitespace_does_not_close_block_fence(self):
+        for label, whitespace in self.non_ascii_whitespace.items():
+            for fence_kind, opener, closer in (
+                ("backtick", "```text", "```"),
+                ("tilde", "~~~ text", "~~~"),
+            ):
+                with self.subTest(label=label, fence=fence_kind):
+                    block = (
+                        "## Managed\n\n"
+                        "%s\n"
+                        "literal\n"
+                        "%s%s\n" % (opener, closer, whitespace)
+                    )
+                    with self.assertRaisesRegex(
+                        merge_section.MergeError,
+                        "block ends inside an unclosed code fence",
+                    ):
+                        merge_section.merge("# Synthetic document\n", block)
+
+    def test_non_ascii_whitespace_after_hashes_is_not_a_closing_sequence(self):
+        for label, whitespace in self.non_ascii_whitespace.items():
+            with self.subTest(label=label, location="block"):
+                block = "## Managed ##%s\n\nDifferent section body.\n" % whitespace
+                merged, action = merge_section.merge(
+                    "# Synthetic document\n",
+                    block,
+                )
+                self.assertEqual(action, "appended")
+                self.assertTrue(merged.endswith(block))
+
+            with self.subTest(label=label, location="target"):
+                original = (
+                    "## Managed ##%s\n\nDifferent section body.\n" % whitespace
+                )
+                merged, action = merge_section.merge(original, self.block)
+                self.assertEqual(action, "appended")
+                self.assertTrue(merged.startswith(original))
 
 
 class BoundaryHardeningTests(unittest.TestCase):
@@ -2672,6 +2918,164 @@ class FileLevelTests(unittest.TestCase):
                     result.stderr,
                 )
                 self.assertEqual(target.read_bytes(), original)
+
+    def test_cli_rejects_closing_hash_alias_without_writing(self):
+        original = (
+            b"\xef\xbb\xbf# Synthetic document\r\n\r\n"
+            b"  ## Managed ###\t\r\n\r\n"
+            b"Old semantic duplicate.\r\n"
+        )
+        target = self._write("target.md", original)
+        block = self._write(
+            "section.md", b"## Managed\n\nCanonical body.\n"
+        )
+
+        # 通常実行とdry-runの両方を同じidentity validationへ通す。
+        # CRLF/BOMを含む元bytesが一切変化しないことまで固定する。
+        for check_arg in ((), ("--check",)):
+            with self.subTest(check=bool(check_arg)):
+                target.write_bytes(original)
+                result = self._run_cli(str(target), str(block), *check_arg)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(
+                    "closing-hash managed H2 alias outside literal regions",
+                    result.stderr,
+                )
+                self.assertEqual(target.read_bytes(), original)
+
+    def test_cli_rejects_closing_hash_block_without_writing(self):
+        original = b"# Synthetic document\n\nExisting body.\n"
+        target = self._write("target.md", original)
+        block = self._write(
+            "section.md", b"## Managed ##\n\nCanonical body.\n"
+        )
+
+        for check_arg in ((), ("--check",)):
+            with self.subTest(check=bool(check_arg)):
+                result = self._run_cli(str(target), str(block), *check_arg)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(
+                    "block heading must use plain form without a closing hash "
+                    "sequence",
+                    result.stderr,
+                )
+                self.assertEqual(target.read_bytes(), original)
+
+    def test_cli_preserves_non_ascii_heading_suffixes_with_bom_crlf(self):
+        suffix_kinds = {
+            "plain": "## Managed%s",
+            "after-hashes": "## Managed ##%s",
+        }
+        for label, whitespace in (
+            AsciiWhitespaceGrammarTests.non_ascii_whitespace.items()
+        ):
+            for suffix_kind, heading_template in suffix_kinds.items():
+                with self.subTest(label=label, suffix=suffix_kind):
+                    original_text = (
+                        "# Synthetic document\r\n\r\n"
+                        + (heading_template % whitespace)
+                        + "\r\n\r\nDifferent section body.\r\n"
+                    )
+                    original = b"\xef\xbb\xbf" + original_text.encode("utf-8")
+                    target = self._write(
+                        "target-%s-%s.md" % (label, suffix_kind),
+                        original,
+                    )
+                    block = self._write(
+                        "section-%s-%s.md" % (label, suffix_kind),
+                        b"## Managed\n\nCanonical body.\n",
+                    )
+
+                    # dry-runは「追記が必要」の1を返すだけで、元bytesへ触れない。
+                    stale = self._run_cli(str(target), str(block), "--check")
+                    self.assertEqual(stale.returncode, 1)
+                    self.assertEqual(target.read_bytes(), original)
+
+                    # 通常実行は別headingを保持して正本を追記し、BOM/CRLFを維持する。
+                    applied = self._run_cli(str(target), str(block))
+                    self.assertEqual(applied.returncode, 0)
+                    updated = target.read_bytes()
+                    self.assertTrue(updated.startswith(original))
+                    self.assertIn(b"Different section body.\r\n", updated)
+                    self.assertTrue(
+                        updated.endswith(
+                            b"\r\n## Managed\r\n\r\nCanonical body.\r\n"
+                        )
+                    )
+                    self.assertNotIn(b"\n", updated.replace(b"\r\n", b""))
+
+                    canonical = self._run_cli(
+                        str(target),
+                        str(block),
+                        "--check",
+                    )
+                    self.assertEqual(canonical.returncode, 0)
+
+    def test_cli_non_ascii_fence_suffix_fails_closed_with_bom_crlf(self):
+        for label, whitespace in (
+            AsciiWhitespaceGrammarTests.non_ascii_whitespace.items()
+        ):
+            with self.subTest(label=label):
+                original_text = (
+                    "# Synthetic document\r\n\r\n"
+                    "## Managed\r\n\r\nOld body.\r\n\r\n"
+                    "```text\r\n"
+                    "literal\r\n"
+                    "```%s\r\n"
+                    "# Protected inside the unclosed fence\r\n" % whitespace
+                )
+                original = b"\xef\xbb\xbf" + original_text.encode("utf-8")
+                target = self._write("fence-target-%s.md" % label, original)
+                block = self._write(
+                    "fence-section-%s.md" % label,
+                    b"## Managed\n\nCanonical body.\n",
+                )
+
+                for check_arg in ((), ("--check",)):
+                    with self.subTest(check=bool(check_arg)):
+                        result = self._run_cli(
+                            str(target),
+                            str(block),
+                            *check_arg,
+                        )
+                        self.assertEqual(result.returncode, 2)
+                        self.assertIn(
+                            "target ends inside an unclosed code fence",
+                            result.stderr,
+                        )
+                        self.assertEqual(target.read_bytes(), original)
+
+    def test_cli_non_ascii_setext_content_fails_closed_with_bom_crlf(self):
+        for label, whitespace in (
+            AsciiWhitespaceGrammarTests.non_ascii_whitespace.items()
+        ):
+            with self.subTest(label=label):
+                original_text = (
+                    "# Synthetic document\r\n\r\n"
+                    "## Managed\r\n\r\nOld body.\r\n\r\n"
+                    "%s\r\n---\r\n\r\nProtected tail.\r\n\r\n"
+                    "## Next\r\n\r\nKeep.\r\n" % whitespace
+                )
+                original = b"\xef\xbb\xbf" + original_text.encode("utf-8")
+                target = self._write("setext-target-%s.md" % label, original)
+                block = self._write(
+                    "setext-section-%s.md" % label,
+                    b"## Managed\n\nCanonical body.\n",
+                )
+
+                for check_arg in ((), ("--check",)):
+                    with self.subTest(check=bool(check_arg)):
+                        result = self._run_cli(
+                            str(target),
+                            str(block),
+                            *check_arg,
+                        )
+                        self.assertEqual(result.returncode, 2)
+                        self.assertIn(
+                            "possible setext heading",
+                            result.stderr,
+                        )
+                        self.assertEqual(target.read_bytes(), original)
 
     def test_api_and_cli_reject_multiline_reference_html_without_writing(self):
         originals = {

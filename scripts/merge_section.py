@@ -12,13 +12,17 @@ Reference implementation for the markdown-idempotent-section-merge skill:
   followed by space/tab or end of line, up to 3 leading spaces). ``###``
   subheadings stay inside the section; an H1 ends it — a part boundary must
   never be swallowed into a replace.
+- CommonMark block-whitespace decisions use ASCII space/tab only. Unicode
+  whitespace remains heading/line content and never closes a fence or
+  closing-hash sequence by implicit Python ``strip`` behavior.
 - The merged block must contain exactly one H1/H2-level heading: its own
   first line, a plain column-0 ``## Heading``.
-- Malformed input is refused (exit 2) instead of guessed at: duplicate
-  copies of the heading in the target, extra headings in the block, an
-  unclosed code fence in either, unclosed explicit-end raw HTML block,
-  unclosed leading YAML/TOML frontmatter, CR-only line endings, or a possible
-  setext heading (``===`` / ``---`` underline) inside the replaced span.
+- Malformed input is refused (exit 2) instead of guessed at: duplicate or
+  syntactically aliased copies of the heading in the target, a closing-hash
+  or extra heading in the block, an unclosed code fence in either, unclosed
+  explicit-end raw HTML block, unclosed leading YAML/TOML frontmatter,
+  CR-only line endings, or a possible setext heading (``===`` / ``---``
+  underline) inside the replaced span.
 - Applying the same merge twice leaves the file byte-identical
   (apply-twice-diff-zero). The target's line-ending style (LF or CRLF) and
   UTF-8 BOM are preserved; when only mixed line endings need normalizing,
@@ -70,6 +74,10 @@ _BOUNDARY_RE = re.compile(r"^ {0,3}#{1,2}(?:[ \t]|$)")
 
 # The canonical block's own heading: a plain column-0 H2.
 _H2_RE = re.compile(r"^##(?:[ \t]|$)")
+
+# CommonMarkのATX closing sequence。見出し本文と空白で区切られ、末尾まで
+# unescaped ``#`` と空白だけが続く場合に限って本文から除外される。
+_ATX_CLOSING_SEQUENCE_RE = re.compile(r"[ \t]+#+[ \t]*$")
 
 # A possible setext underline: a run of "=" or "-" alone on a line. Under a
 # paragraph line this is a real heading that the boundary scan above cannot
@@ -254,6 +262,16 @@ class AtomicCommitError(MergeError):
         self.artifacts = tuple(artifacts)
 
 
+def _is_ascii_blank(text):
+    """Return whether TEXT contains only CommonMark blank-line whitespace."""
+    return _BLANK_RE.fullmatch(text) is not None
+
+
+def _rstrip_ascii_whitespace(text):
+    """Remove only ASCII space/tab used by CommonMark block grammar."""
+    return text.rstrip(" \t")
+
+
 def _frontmatter_scan(lines):
     """Return ``(states, unclosed_kind)`` for exact leading frontmatter.
 
@@ -392,7 +410,7 @@ def _markdown_region_scan(lines):
                 fence_match
                 and fence_match.group(1)[0] == open_fence_char
                 and len(fence_match.group(1)) >= open_fence_len
-                and not fence_match.group(2).strip()
+                and _is_ascii_blank(fence_match.group(2))
             ):
                 open_fence_char = ""
                 open_fence_len = 0
@@ -544,7 +562,7 @@ def heading_occurrences(lines, heading):
     return [
         i
         for i, line in enumerate(lines)
-        if not ignored_states[i] and line.rstrip() == heading
+        if not ignored_states[i] and _rstrip_ascii_whitespace(line) == heading
     ]
 
 
@@ -557,9 +575,31 @@ def _indented_heading_occurrences(lines, heading, ignored_states):
 
         # CommonMarkのATX見出しとして成立し得る1〜3 spaceだけを同一性候補にする。
         # 4+ space、tab、閉じハッシュは正本と別物という既存契約を維持する。
-        candidate = line.rstrip()
+        candidate = _rstrip_ascii_whitespace(line)
         leading_spaces = len(candidate) - len(candidate.lstrip(" "))
         if 1 <= leading_spaces <= 3 and candidate[leading_spaces:] == heading:
+            occurrences.append(index)
+    return occurrences
+
+
+def _closing_hash_heading_occurrences(lines, heading, ignored_states):
+    """Indices of CommonMark closing-hash aliases of the managed heading."""
+    occurrences = []
+    for index, line in enumerate(lines):
+        if ignored_states[index]:
+            continue
+
+        # 正本のraw headingは動的regexにせず、固定文字列として比較する。
+        # その後ろだけを静的closing-sequence regexへ渡すことで、入力由来の
+        # inline内容を解釈せず既知のblock-level aliasだけを判定する。
+        leading_spaces = len(line) - len(line.lstrip(" "))
+        if leading_spaces > 3:
+            continue
+        candidate = line[leading_spaces:]
+        if not candidate.startswith(heading):
+            continue
+        suffix = candidate[len(heading) :]
+        if _ATX_CLOSING_SEQUENCE_RE.fullmatch(suffix):
             occurrences.append(index)
     return occurrences
 
@@ -572,7 +612,7 @@ def _split_lines(text):
 
 
 def _strip_trailing_blank(lines):
-    while lines and not lines[-1].strip():
+    while lines and _is_ascii_blank(lines[-1]):
         lines.pop()
 
 
@@ -580,6 +620,13 @@ def validate_block(block_lines):
     """Return the block's heading line after checking the merge invariants."""
     if not block_lines or not _H2_RE.match(block_lines[0]):
         raise MergeError("block must start with an H2 heading line ('## ...')")
+    heading = _rstrip_ascii_whitespace(block_lines[0])
+    if _ATX_CLOSING_SEQUENCE_RE.search(heading):
+        # block側でclosing-hashを正本にすると、素のH2とのidentityが曖昧な
+        # まま固定される。書込み前にplain formへ直すことを要求する。
+        raise MergeError(
+            "block heading must use plain form without a closing hash sequence"
+        )
     region_scan = _markdown_region_scan(block_lines)
     if region_scan[2]:
         # An unclosed fence in the block would swallow whatever follows the
@@ -600,7 +647,7 @@ def validate_block(block_lines):
             "block must contain exactly one H1/H2-level heading outside "
             "literal regions: its own first line"
         )
-    return block_lines[0].rstrip()
+    return heading
 
 
 def _reject_setext_in_span(lines, start, end):
@@ -619,7 +666,7 @@ def _reject_setext_in_span(lines, start, end):
         if index - 1 <= start or states[index - 1]:
             continue
         previous = lines[index - 1]
-        if not previous.strip() or _BOUNDARY_RE.match(previous):
+        if _is_ascii_blank(previous) or _BOUNDARY_RE.match(previous):
             continue
         raise MergeError(
             "possible setext heading ('===' or '---' underline) inside the "
@@ -661,7 +708,10 @@ def merge(document_text, block_text):
     occurrences = [
         index
         for index, line in enumerate(doc_lines)
-        if not ignored_states[index] and line.rstrip() == heading
+        if (
+            not ignored_states[index]
+            and _rstrip_ascii_whitespace(line) == heading
+        )
     ]
     indented_occurrences = _indented_heading_occurrences(
         doc_lines,
@@ -674,6 +724,19 @@ def merge(document_text, block_text):
         raise MergeError(
             "target contains an indented managed H2 outside literal regions; "
             "move it to column 0, rename it, or deduplicate it before merging"
+        )
+    closing_hash_occurrences = _closing_hash_heading_occurrences(
+        doc_lines,
+        heading,
+        ignored_states,
+    )
+    if closing_hash_occurrences:
+        # CommonMark renderer上は素の正本H2と同じ本文になるため、別物として
+        # append/replaceすると意味上の重複を作る。自動書換えはせず固定文言で拒否する。
+        raise MergeError(
+            "target contains a closing-hash managed H2 alias outside literal "
+            "regions; convert it to the plain heading form, rename it, or "
+            "deduplicate it before merging"
         )
     if len(occurrences) > 1:
         raise MergeError(

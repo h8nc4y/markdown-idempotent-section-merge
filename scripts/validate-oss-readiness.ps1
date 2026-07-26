@@ -778,6 +778,8 @@ $requiredFiles = @(
     'SECURITY.md',
     'SKILL.md',
     'docs/SKILL.ja.md',
+    'docs/closing-hash-managed-heading-contract.md',
+    'docs/commonmark-ascii-whitespace-contract.md',
     'docs/frontmatter-heading-scan-contract.md',
     'docs/html-block-heading-scan-contract.md',
     'docs/macos-ci-contract.md',
@@ -810,9 +812,17 @@ Assert-FileContains -RelativePath 'README.md' -Pattern 'CONTRIBUTING\.md' -Descr
 Assert-FileContains -RelativePath 'README.md' -Pattern 'SECURITY\.md' -Description 'link to SECURITY.md'
 Assert-FileContains -RelativePath 'README.md' -Pattern 'docs/SKILL\.ja\.md' -Description 'link to the Japanese skill version'
 Assert-FileContains -RelativePath 'README.md' -Pattern 'merge_section\.py' -Description 'reference implementation usage'
+Assert-FileContains -RelativePath 'README.md' -Pattern 'docs/closing-hash-managed-heading-contract\.md' -Description 'link to the closing-hash identity contract'
+Assert-FileContains -RelativePath 'README.md' -Pattern 'docs/commonmark-ascii-whitespace-contract\.md' -Description 'link to the CommonMark ASCII whitespace contract'
+Assert-FileContains -RelativePath 'SKILL.md' -Pattern '(?is)closing-hash block heading.*ambiguous managed-heading.*refuse without writing' -Description 'closing-hash fail-closed contract'
+Assert-FileContains -RelativePath 'docs/SKILL.ja.md' -Pattern '(?is)閉じハッシュ形式.*同一性が曖昧.*no-write' -Description 'Japanese closing-hash fail-closed contract'
+Assert-FileContains -RelativePath 'SKILL.md' -Pattern '(?is)ASCII-only block whitespace.*NBSP.*EM SPACE.*form feed.*vertical tab' -Description 'CommonMark ASCII-only block whitespace contract'
+Assert-FileContains -RelativePath 'docs/SKILL.ja.md' -Pattern '(?is)block whitespace.*ASCII限定.*NBSP.*EM SPACE.*form feed.*vertical tab' -Description 'Japanese CommonMark ASCII-only block whitespace contract'
 Assert-FileContains -RelativePath 'SKILL.md' -Pattern '(?is)frontmatter.*YAML.*TOML.*fail' -Description 'frontmatter-aware fail-closed contract'
 Assert-FileContains -RelativePath 'docs/SKILL.ja.md' -Pattern '(?is)frontmatter.*YAML.*TOML.*fail' -Description 'Japanese frontmatter-aware fail-closed contract'
 Assert-FileContains -RelativePath 'docs/frontmatter-heading-scan-contract.md' -Pattern '(?is)YAML.*TOML.*完全一致.*fail closed' -Description 'frontmatter heading-scan design and test contract'
+Assert-FileContains -RelativePath 'docs/closing-hash-managed-heading-contract.md' -Pattern '(?is)CommonMark 0\.31\.2.*closing sequence.*0〜3.*fail closed.*CRLF.*BOM' -Description 'closing-hash managed-heading identity and no-write contract'
+Assert-FileContains -RelativePath 'docs/commonmark-ascii-whitespace-contract.md' -Pattern '(?is)CommonMark 0\.31\.2.*NBSP.*EM SPACE.*form feed.*vertical tab.*BOM.*CRLF' -Description 'CommonMark ASCII whitespace design and byte-preservation regressions'
 Assert-FileContains -RelativePath 'SKILL.md' -Pattern '(?is)CommonMark 0\.31\.2 raw HTML.*types 1.7.*type 7.*paragraph.*fail' -Description 'raw HTML heading-scan and fail-closed contract'
 Assert-FileContains -RelativePath 'docs/SKILL.ja.md' -Pattern '(?is)CommonMark 0\.31\.2 raw HTML.*type 1.7.*type 7.*段落.*fail closed' -Description 'Japanese raw HTML heading-scan and fail-closed contract'
 Assert-FileContains -RelativePath 'docs/html-block-heading-scan-contract.md' -Pattern '(?is)type 1.7.*未クローズ.*fail closed.*apply-twice.*CRLF.*BOM' -Description 'raw HTML heading-scan design and regression contract'
