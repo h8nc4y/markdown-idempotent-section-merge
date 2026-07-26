@@ -5,6 +5,8 @@ Reference implementation for the markdown-idempotent-section-merge skill:
 
 - Heading scans are fence-aware: lines inside ``` or ~~~ fenced code blocks
   never count as headings or section boundaries.
+- Exact document-leading YAML/TOML frontmatter is excluded from heading and
+  fence scans; an unclosed recognized opener fails closed before writing.
 - A section boundary is the next heading of level 1 or 2 (``#`` or ``##``
   followed by space/tab or end of line, up to 3 leading spaces). ``###``
   subheadings stay inside the section; an H1 ends it — a part boundary must
@@ -13,8 +15,9 @@ Reference implementation for the markdown-idempotent-section-merge skill:
   first line, a plain column-0 ``## Heading``.
 - Malformed input is refused (exit 2) instead of guessed at: duplicate
   copies of the heading in the target, extra headings in the block, an
-  unclosed code fence in either, CR-only line endings, or a possible setext
-  heading (``===`` / ``---`` underline) inside the replaced span.
+  unclosed code fence in either, unclosed leading YAML/TOML frontmatter,
+  CR-only line endings, or a possible setext heading (``===`` / ``---``
+  underline) inside the replaced span.
 - Applying the same merge twice leaves the file byte-identical
   (apply-twice-diff-zero). The target's line-ending style (LF or CRLF) and
   UTF-8 BOM are preserved; when only mixed line endings need normalizing,
@@ -72,6 +75,13 @@ _H2_RE = re.compile(r"^##(?:[ \t]|$)")
 # see, so the merge refuses to replace across one.
 _SETEXT_RE = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
 
+# Leading frontmatter is intentionally a small exact-line contract, not a
+# YAML/TOML parser. Ambiguous unclosed input fails closed before any write.
+_FRONTMATTER_CLOSERS = {
+    "---": ("YAML", ("---", "...")),
+    "+++": ("TOML", ("+++",)),
+}
+
 _BOM = b"\xef\xbb\xbf"
 _MAX_XATTR_COUNT = 256
 _MAX_XATTR_BYTES = 1024 * 1024
@@ -95,7 +105,7 @@ class AtomicCommitError(MergeError):
         self.artifacts = tuple(artifacts)
 
 
-def _fence_scan(lines):
+def _fence_scan(lines, ignored_states=None):
     """Return ``(states, open_at_end)``.
 
     ``states`` maps each line to True when it belongs to a fenced code
@@ -108,7 +118,12 @@ def _fence_scan(lines):
     states = []
     open_char = ""
     open_len = 0
-    for line in lines:
+    for index, line in enumerate(lines):
+        # frontmatter 内の fence delimiter は Markdown 本文ではない。
+        # 状態遷移から除外し、frontmatter 後へ偽の open 状態を持ち越さない。
+        if ignored_states is not None and ignored_states[index]:
+            states.append(False)
+            continue
         match = _FENCE_RE.match(line)
         if not open_char:
             if match and not (match.group(1)[0] == "`" and "`" in match.group(2)):
@@ -130,28 +145,76 @@ def _fence_scan(lines):
     return states, bool(open_char)
 
 
+def _frontmatter_scan(lines):
+    """Return ``(states, unclosed_kind)`` for exact leading frontmatter.
+
+    Only an exact opener on the first line is recognized. YAML closes with
+    an exact ``---`` or ``...`` line; TOML closes with exact ``+++``.
+    Delimiter lines themselves belong to frontmatter.
+    """
+    states = [False] * len(lines)
+    if not lines or lines[0] not in _FRONTMATTER_CLOSERS:
+        return states, None
+
+    opener = lines[0]
+    kind, closers = _FRONTMATTER_CLOSERS[opener]
+    states[0] = True
+    for index in range(1, len(lines)):
+        states[index] = True
+        if lines[index] in closers:
+            return states, None
+    return states, kind
+
+
+def _markdown_region_scan(lines):
+    """Return ``(ignored, fences, fence_open)`` for heading scans.
+
+    ``ignored`` covers leading frontmatter and fenced code. An unclosed
+    frontmatter opener is ambiguous with ordinary Markdown, so this helper
+    refuses it instead of guessing which bytes are safe to replace.
+    """
+    frontmatter_states, unclosed_kind = _frontmatter_scan(lines)
+    if unclosed_kind is not None:
+        expected = "'---' or '...'" if unclosed_kind == "YAML" else "'+++'"
+        raise MergeError(
+            "document starts with unclosed %s frontmatter; close it with an "
+            "exact %s line before merging" % (unclosed_kind, expected)
+        )
+
+    fence_region_states, fence_open = _fence_scan(
+        lines, ignored_states=frontmatter_states
+    )
+    ignored_states = [
+        in_frontmatter or in_fence
+        for in_frontmatter, in_fence in zip(
+            frontmatter_states, fence_region_states
+        )
+    ]
+    return ignored_states, fence_region_states, fence_open
+
+
 def fence_states(lines):
     """Map each line to True when it belongs to a fenced code block."""
-    return _fence_scan(lines)[0]
+    return _markdown_region_scan(lines)[1]
 
 
 def boundary_indices(lines):
-    """Indices of section-boundary headings (H1/H2), ignoring code fences."""
-    states = fence_states(lines)
+    """Indices of H1/H2 boundaries outside frontmatter and code fences."""
+    ignored_states = _markdown_region_scan(lines)[0]
     return [
         i
         for i, line in enumerate(lines)
-        if not states[i] and _BOUNDARY_RE.match(line)
+        if not ignored_states[i] and _BOUNDARY_RE.match(line)
     ]
 
 
 def heading_occurrences(lines, heading):
-    """Indices of non-fenced lines that equal HEADING (trailing space aside)."""
-    states = fence_states(lines)
+    """Indices equal to HEADING outside frontmatter/fences (space aside)."""
+    ignored_states = _markdown_region_scan(lines)[0]
     return [
         i
         for i, line in enumerate(lines)
-        if not states[i] and line.rstrip() == heading
+        if not ignored_states[i] and line.rstrip() == heading
     ]
 
 
@@ -218,7 +281,7 @@ def merge(document_text, block_text):
     heading = validate_block(block_lines)
     block_lines[0] = heading  # heading is written without trailing spaces
 
-    if _fence_scan(doc_lines)[1]:
+    if _markdown_region_scan(doc_lines)[2]:
         # CommonMark runs an unclosed fence to EOF, so the section would
         # extend to EOF and a replace would rewrite the whole visually
         # swallowed tail. Malformed input: stop and report instead.

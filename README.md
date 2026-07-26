@@ -173,6 +173,13 @@ targets, non-regular files, and multi-hard-link files are refused because
 reading or replacing them would silently change their semantics or expose a
 plaintext temporary.
 
+A document-leading exact YAML frontmatter block (`---` through exact `---` or
+`...`) or TOML block (`+++` through exact `+++`) is excluded from heading and
+fence scans. Heading-looking metadata comments therefore cannot become
+replacement anchors. A recognized opener without its exact closer is refused
+before any write. The exact scope and regression plan are recorded in
+[the frontmatter heading-scan contract](docs/frontmatter-heading-scan-contract.md).
+
 The target's identity, metadata, and bytes are rechecked immediately before
 commit. This detects changes completed before that check, but the check and
 replacement are separate operations: a writer that changes an existing target
@@ -182,8 +189,9 @@ A previously missing target is installed with a no-replace operation, so a
 concurrent creation is never overwritten.
 
 Fixtures under [`tests/fixtures/`](tests/fixtures) cover the trap case
-(heading inside a code fence), append, replace, the `###` subheading
-boundary, and the `#` part boundary. The self-test needs no dependencies:
+(heading inside a code fence), a heading literal in leading frontmatter,
+append, replace, the `###` subheading boundary, and the `#` part boundary.
+The self-test needs no dependencies:
 
 ```bash
 python scripts/test_merge_section.py
@@ -247,6 +255,10 @@ repository paths you cannot publish, or customer data in public issues.
   would silently rewrite the visually swallowed tail. The same
   stop-and-report rule covers CR-only line endings and a possible setext
   heading inside the replaced span.
+- A leading exact `---` (YAML) or `+++` (TOML) frontmatter opener must have an
+  exact matching closer. The scanner ignores heading literals inside a closed
+  block and fails closed on an unclosed one rather than confusing metadata
+  with the managed section.
 - When only mixed line endings are normalized, the tool reports
   `normalized` / `would-normalize` — it never claims "unchanged" while
   rewriting bytes.
@@ -277,6 +289,10 @@ repository paths you cannot publish, or customer data in public issues.
   `## X` are different headings).
 - Setext headings are never boundaries; a possible setext heading inside
   the replaced span makes the merge refuse instead of deleting it.
+- Frontmatter recognition is intentionally narrow: only exact column-0
+  delimiters on the first line are supported (YAML `---` with `---`/`...`, or
+  TOML `+++` with `+++`). Later or non-exact delimiter lines remain ordinary
+  Markdown.
 - Fence handling covers CommonMark's core column 0–3 backtick/tilde rules
   (including the backtick-info-string exclusion); fences inside blockquotes
   or deep list indentation are out of scope.
