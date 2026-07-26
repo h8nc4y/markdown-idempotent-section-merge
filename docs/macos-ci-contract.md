@@ -12,7 +12,12 @@ GitHub-hosted macOS 15上で継続検証する。
   private-marker self-test / scan、committed-tree whitespaceを同じ順序で実行する。
 - Windows PowerShell 5.1 stepは既存どおりWindows runnerだけで実行する。
 - 全matrix jobは既存の25分timeoutとread-only `contents` permissionを維持する。
-- action revision、product実装、scanner timeout、検出範囲を変更しない。
+- action revision、scanner timeout、検出範囲を変更しない。native失敗で実装差が
+  判明した場合は、固定診断とcross-platform回帰を先に作り、最小修正だけを行う。
+- scannerのGit root判定は、Gitが返すworktree内判定とroot相対prefixを同じ
+  bounded processで取得する。exact `true`と空prefixだけを受理し、macOSの
+  `/var/...`と`/private/var/...`のような同一rootの祖先aliasは文字列比較しない。
+  repo subdirectory、bare / Git directory、malformed recordはfail closedにする。
 - readinessは`validate` job内でmatrix、`${{ matrix.os }}` runner、25分timeoutを
   同じ構造として検証し、PS5.1 stepのname / condition / shellも同じstepへ固定する。
   `validate`はroot `jobs:` mapping内に所属させ、別jobやblock scalar内の正しい
@@ -41,6 +46,9 @@ GitHub-hosted macOS 15上で継続検証する。
 - native macOSの証跡はPRとpost-mainのGitHub Actions runで取得する。
 - runnerが失敗した場合はログの固定診断だけを扱い、timeoutやscanner境界を
   証拠なしに緩めない。
+- PR #8の初回run `30208443602`ではUbuntu / Windowsが成功し、macOS 15だけ
+  private-marker self-testの`git-root-mismatch`で失敗した。このREDをroot
+  identity回帰として保持し、修正後runとpost-main runでGREENを確認する。
 
 ## 一次情報
 

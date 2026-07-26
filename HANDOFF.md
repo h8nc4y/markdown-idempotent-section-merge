@@ -10,13 +10,16 @@ matrixで継続検証する。
 - Windows / Ubuntuを維持して`macos-15`をmatrixへ追加する。
 - macOSでPS7 readiness、merge tests、private-marker self-test / scan、
   committed-tree whitespaceを同じ25分bound内で実行する。
-- Windows PowerShell 5.1 step、action SHA、scanner timeout、product実装を変えない。
+- Windows PowerShell 5.1 step、action SHA、scanner timeout、検出範囲を維持する。
+- native macOSで実測したroot alias誤判定だけを、Gitのworktree / prefix契約で修正する。
 - native macOS実測はPRとpost-main runで取得する。
 
 ## Key files
 
 - `.github/workflows/validate.yml`
 - `scripts/validate-oss-readiness.ps1`
+- `scripts/scan-private-markers.ps1`
+- `scripts/test-scan-private-markers.ps1`
 - `docs/macos-ci-contract.md`
 - `README.md` / `CHANGELOG.md`
 
@@ -24,6 +27,9 @@ matrixで継続検証する。
 
 - `macos-latest`の将来image切替を避け、契約するnative imageを`macos-15`へ固定する。
 - macOS固有失敗はnative runの実測から修正し、timeoutや検出境界を先回りで緩めない。
+- rootの文字列表現同士は比較しない。1回のbounded Git probeで
+  `--is-inside-work-tree=true`かつ`--show-prefix`空を厳密に要求し、祖先aliasを
+  許容しながらrepo subdirectory / bare / Git directoryを拒否する。
 - 直前taskのPR #7はsquash merge `486eace`、post-main run `30204599205`
   attempt 2でWindows / Ubuntu SUCCESS、main同期・cleanup済み。
 
@@ -62,9 +68,27 @@ matrixで継続検証する。
   統一し、root先頭行だけを置換するvalid YAML mutationへ修正した。PyYAMLで
   semantic root=`name`のみ / jobsなしを確認し、validatorは拒否した。
 - 第6 exact freeze `a9f4b6f7`は独立review P1 / P2 / P3 = 0。組込み23変異、
-  追加YAML adversarial、comment / blank正例も合格した。native GitHub Actionsは未実施。
+  追加YAML adversarial、comment / blank正例も合格した。
+- commit `027b831`をpushし、PR #8 / run `30208443602`を実行。Ubuntu / Windowsは
+  SUCCESS、macOS 15だけprivate-marker self-testで
+  `integrity: git-root-mismatch`となった。run logには絶対pathがないため具体的な
+  2表記は推定だが、Gitのworktree canonicalizationとWindows PowerShell 7の
+  `\\?\`同型回帰で、lexical root比較が原因となる機構を切り分けた。
+- scannerをexact 2-record probeへ変更し、通常root scanはPS7 / PS5.1でPASS。
+  Windows PowerShell 7のextended-length alias正例、repo subdirectory、
+  non-worktree、non-empty prefixの負例をself-testへ追加した。
+- 独立review P3を受け、missing final LF、extra record、NUL、invalid UTF-8、
+  case / whitespace drift、root link、`.git` directory、bare repositoryの
+  public-entrypoint負例を追加した。修正後のprivate-marker self-testは
+  PS7 176.7秒 / PS5.1 118.0秒でPASS。
+  readiness / repository scanも両hostでPASSし、Python 120件 / 14 skip、
+  workflow YAML parse、diff checkがPASS。
+- Gitleaks 910.45 KB / 0 leaks、Semgrep p/secretsは変更PowerShell 2 files /
+  36 rules / 0 findings。変更6 filesはstrict UTF-8、LF、意図したBOMだけ、
+  NUL / FF / U+FFFD / trailing whitespaceなし。
 
 ## Next steps
 
-review済み差分をcommit / push / PRへ進め、native macOSを含む全jobs成功後だけ
-merge / post-main / cleanupする。
+scanner修正後のPS7 / PS5.1全gate、security / text hygiene、独立reviewを再実行し、
+PR #8へ追加commitをpushする。native macOSを含む全jobs成功後だけmerge /
+post-main / cleanupする。

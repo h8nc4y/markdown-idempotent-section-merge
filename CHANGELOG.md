@@ -17,6 +17,11 @@ The format loosely follows Keep a Changelog conventions.
   key spellings, multiline scalar decoys, and duplicate contract or root
   `jobs` keys. Pin every required validation step and its ordering as one
   executable contract rather than accepting command-name text elsewhere.
+- Determine repository-root identity from one bounded Git probe that requires
+  exact `--is-inside-work-tree=true` and an empty `--show-prefix`. This accepts
+  equivalent ancestor-resolved path spellings such as macOS `/var/...` and
+  `/private/var/...`, while repository subdirectories, bare/Git directories,
+  malformed probe records, and non-worktree roots still fail closed.
 - Treat a managed H2 with 1–3 leading ASCII spaces outside literal regions as
   an ambiguous identity and refuse both merge and `--check` without writing.
   Do not auto-reindent possible list/container content; preserve 4+ space,

@@ -1398,6 +1398,36 @@ You can also write C:\Users\<name>\project to describe a user directory.
         Add-Failure "Expected local marker output to name local-private-marker-1. Output: $($localMarkerResult.Output.Trim())"
     }
 
+    # The scan root itself must remain a real directory. Ancestor aliases are
+    # tolerated only after this leaf-level link/reparse gate has passed.
+    $linkedRootTarget = Join-Path $tempRoot 'linked-root-target'
+    $linkedScanRoot = Join-Path $tempRoot 'linked-scan-root'
+    New-Item -ItemType Directory -Path $linkedRootTarget | Out-Null
+    try {
+        if ($runtimeIsWindows) {
+            New-Item `
+                -ItemType Junction `
+                -Path $linkedScanRoot `
+                -Target $linkedRootTarget |
+                Out-Null
+        } else {
+            New-Item `
+                -ItemType SymbolicLink `
+                -Path $linkedScanRoot `
+                -Target $linkedRootTarget |
+                Out-Null
+        }
+        $linkedRootResult = Invoke-Scanner -ScanPath $linkedScanRoot
+        if ($linkedRootResult.ExitCode -ne 2 -or
+            $linkedRootResult.Output -notmatch
+            'integrity: scan-root-type') {
+            Add-Failure "Expected a linked scan root to fail closed. Output: $($linkedRootResult.Output.Trim())"
+        }
+    }
+    catch {
+        Add-Failure 'Expected the linked scan-root fixture to be creatable.'
+    }
+
     # Gitのforward-slash pathを全OSで保持し、nested fileとdotfileを同時に走査する。
     # Windows限定separator変換とUnix側`-Force`漏れを同じfixtureで検出する。
     $gitCommand = Get-Command git -ErrorAction SilentlyContinue
@@ -1671,12 +1701,56 @@ cat
             Add-Failure "Expected the public scanner to ignore ambient GIT_INDEX_FILE. Output: $($ambientIndexOnlyResult.Output.Trim())"
         }
 
+        if ($runtimeIsWindows -and
+            $PSVersionTable.PSVersion.Major -ge 7 -and
+            $gitRoot -match '^[A-Za-z]:\\') {
+            # PowerShell 7 accepts Windows extended-length syntax as a second
+            # lexical spelling of the same directory. It reproduces the macOS
+            # /var -> /private/var mismatch without weakening the direct-link
+            # root rejection. Windows PowerShell 5.1 cannot Join-Path this
+            # syntax, while native macOS coverage also runs PowerShell 7.
+            $extendedGitRoot = '\\?\' + $gitRoot
+            $extendedRootResult = Invoke-Scanner -ScanPath $extendedGitRoot
+            if ($extendedRootResult.ExitCode -ne 1 -or
+                $extendedRootResult.Output -notmatch
+                'scan target: git-index\+worktree' -or
+                $extendedRootResult.Output -notmatch 'sub/deep/leak\.md' -or
+                $extendedRootResult.Output -notmatch '\.editorconfig' -or
+                $extendedRootResult.Output -match 'integrity:') {
+                Add-Failure "Expected an equivalent extended-length repository root to scan normally. Output: $($extendedRootResult.Output.Trim())"
+            }
+        }
+
         # Passing a repository subdirectory as the scan root must fail closed.
         # It must never fall back to a partial working-tree scan.
         $rootMismatchResult = Invoke-Scanner -ScanPath (Join-Path $gitRoot 'sub')
         if ($rootMismatchResult.ExitCode -ne 2 -or
             $rootMismatchResult.Output -notmatch 'integrity: git-root-mismatch') {
             Add-Failure "Expected repository root mismatch to fail closed. Output: $($rootMismatchResult.Output.Trim())"
+        }
+
+        # Git metadata and a bare repository can both report an empty prefix,
+        # but neither is a worktree root. The inside-worktree record is
+        # therefore part of the same fail-closed identity contract.
+        $gitDirectoryResult = Invoke-Scanner `
+            -ScanPath (Join-Path $gitRoot '.git')
+        if ($gitDirectoryResult.ExitCode -ne 2 -or
+            $gitDirectoryResult.Output -notmatch
+            'integrity: git-root-mismatch') {
+            Add-Failure "Expected the Git directory itself to fail closed. Output: $($gitDirectoryResult.Output.Trim())"
+        }
+
+        $bareRoot = Join-Path $tempRoot 'bare-repository'
+        New-Item -ItemType Directory -Path $bareRoot | Out-Null
+        [void](Invoke-CheckedFixtureGit `
+            -FixtureRoot $bareRoot `
+            -Arguments @('init', '--quiet', '--bare') `
+            -Context 'Initialize bare repository')
+        $bareRootResult = Invoke-Scanner -ScanPath $bareRoot
+        if ($bareRootResult.ExitCode -ne 2 -or
+            $bareRootResult.Output -notmatch
+            'integrity: git-root-mismatch') {
+            Add-Failure "Expected a bare repository to fail closed. Output: $($bareRootResult.Output.Trim())"
         }
 
         # Normalize the original fixture before exercising index/worktree union
@@ -2437,8 +2511,32 @@ if (-not `$readyObserved) {
             $fakeGitScript = @'
 #!/bin/sh
 case "$*" in
-  *"rev-parse --show-toplevel"*)
-    printf '%s\n' "$MARKDOWN_MERGE_FAKE_GIT_ROOT"
+  *"rev-parse --is-inside-work-tree --show-prefix"*)
+    case "${MARKDOWN_MERGE_FAKE_GIT_PROBE_MODE-}" in
+      missing-final-lf)
+        printf 'true\n'
+        ;;
+      extra-record)
+        printf 'true\n\nextra\n'
+        ;;
+      nul)
+        printf 'true\n\000\n'
+        ;;
+      invalid-utf8)
+        printf '\377\n\n'
+        ;;
+      uppercase)
+        printf 'TRUE\n\n'
+        ;;
+      whitespace)
+        printf ' true\n\n'
+        ;;
+      *)
+        printf '%s\n%s\n' \
+          "${MARKDOWN_MERGE_FAKE_GIT_INSIDE-true}" \
+          "${MARKDOWN_MERGE_FAKE_GIT_PREFIX-}"
+        ;;
+    esac
     ;;
   *"ls-files -z --stage --debug"*)
     case "$MARKDOWN_MERGE_FAKE_GIT_MODE" in
@@ -2503,7 +2601,6 @@ esac
                         -ScanPath $fakeGitRoot `
                         -InheritedEnvironment @{
                             PATH = $fakePath
-                            MARKDOWN_MERGE_FAKE_GIT_ROOT = $fakeGitRoot
                             MARKDOWN_MERGE_FAKE_GIT_MODE =
                                 $malformedCase.Mode
                         }
@@ -2512,6 +2609,81 @@ esac
                         ("integrity: " +
                             [regex]::Escape($malformedCase.Reason))) {
                         Add-Failure "Expected malformed $($malformedCase.Mode) index output to fail closed. Output: $($malformedResult.Output.Trim())"
+                    }
+                }
+
+                # A non-empty Git prefix means the supplied scan path is below
+                # the repository root. Keep this fail-closed guard while the
+                # implementation tolerates equivalent macOS ancestor aliases.
+                $fakePrefixResult = Invoke-Scanner `
+                    -ScanPath $fakeGitRoot `
+                    -InheritedEnvironment @{
+                        PATH = $fakePath
+                        MARKDOWN_MERGE_FAKE_GIT_MODE = 'nul'
+                        MARKDOWN_MERGE_FAKE_GIT_PREFIX = 'sub/'
+                    }
+                if ($fakePrefixResult.ExitCode -ne 2 -or
+                    $fakePrefixResult.Output -notmatch
+                    'integrity: git-root-mismatch') {
+                    Add-Failure "Expected a non-empty Git prefix to fail closed. Output: $($fakePrefixResult.Output.Trim())"
+                }
+
+                # A Git directory or bare repository can return an empty
+                # prefix, but it is not a worktree root and must be rejected.
+                $fakeNonWorktreeResult = Invoke-Scanner `
+                    -ScanPath $fakeGitRoot `
+                    -InheritedEnvironment @{
+                        PATH = $fakePath
+                        MARKDOWN_MERGE_FAKE_GIT_MODE = 'nul'
+                        MARKDOWN_MERGE_FAKE_GIT_INSIDE = 'false'
+                    }
+                if ($fakeNonWorktreeResult.ExitCode -ne 2 -or
+                    $fakeNonWorktreeResult.Output -notmatch
+                    'integrity: git-root-mismatch') {
+                    Add-Failure "Expected a non-worktree Git root to fail closed. Output: $($fakeNonWorktreeResult.Output.Trim())"
+                }
+
+                foreach ($malformedProbeCase in @(
+                    @{
+                        Mode = 'missing-final-lf'
+                        Reason = 'git-top-level-record'
+                    },
+                    @{
+                        Mode = 'extra-record'
+                        Reason = 'git-top-level-record'
+                    },
+                    @{
+                        Mode = 'nul'
+                        Reason = 'git-top-level-record'
+                    },
+                    @{
+                        Mode = 'invalid-utf8'
+                        Reason = 'git-top-level-encoding'
+                    },
+                    @{
+                        Mode = 'uppercase'
+                        Reason = 'git-root-mismatch'
+                    },
+                    @{
+                        Mode = 'whitespace'
+                        Reason = 'git-root-mismatch'
+                    }
+                )) {
+                    $malformedProbeResult = Invoke-Scanner `
+                        -ScanPath $fakeGitRoot `
+                        -InheritedEnvironment @{
+                            PATH = $fakePath
+                            MARKDOWN_MERGE_FAKE_GIT_MODE = 'nul'
+                            MARKDOWN_MERGE_FAKE_GIT_PROBE_MODE =
+                                $malformedProbeCase.Mode
+                        }
+                    if ($malformedProbeResult.ExitCode -ne 2 -or
+                        $malformedProbeResult.Output -notmatch
+                        ("integrity: " +
+                            [regex]::Escape(
+                                $malformedProbeCase.Reason
+                            ))) {
+                        Add-Failure "Expected malformed $($malformedProbeCase.Mode) Git root probe output to fail closed. Output: $($malformedProbeResult.Output.Trim())"
                     }
                 }
             }

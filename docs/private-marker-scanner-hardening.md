@@ -15,8 +15,9 @@ scanner境界だけを強化する。
 - `scripts/test-scan-private-markers.ps1`: synthetic hostile fixtureとcross-platform回帰。
 - `.editorconfig`: 日本語意図コメントをWindows PowerShell 5.1でもparseする
   UTF-8 BOM契約。
-- `.github/workflows/validate.yml`: Windows、Ubuntu、Windows PowerShell 5.1の実行契約。
-  Windows上の2 suiteを直列完走させるため、job全体は25分でboundedにする。
+- `.github/workflows/validate.yml`: Windows、Ubuntu、macOS 15、
+  Windows PowerShell 5.1の実行契約。Windows上の2 suiteを直列完走させるため、
+  job全体は25分でboundedにする。
 - `README.md`、`SECURITY.md`、`CHANGELOG.md`: 利用者向け保証範囲と限界。
 
 ## 設計
@@ -46,17 +47,23 @@ scanner境界だけを強化する。
    fallbackと`.env`、`.pem`、`.key`、`.npmrc`、extensionless textの走査を維持する。
 8. workflowのthird-party actionはfull commit SHAへ固定し、major versionは
    review用commentとして残す。
+9. Git worktree rootはpath文字列の一致ではなく、同じbounded Git processが返す
+   exact `--is-inside-work-tree=true`と空`--show-prefix`で確認する。OSが祖先aliasを
+   physical pathへ解決してもrootとして扱い、non-empty prefixとnon-worktreeは拒否する。
 
 ## 検証計画
 
 - Windows PowerShell 7: readiness、scanner self-test、repository scan。
 - Windows PowerShell 5.1: readiness、scanner self-test、repository scan。
 - official Ubuntu PowerShell: readiness、scanner self-test、repository scan。
+- GitHub-hosted macOS 15 PowerShell 7: readiness、scanner self-test、
+  repository scan、reference tests、whitespace。
 - self-test先頭で初回Windows atomic launch経路を通し、stdin/stdout/stderrの
   `00/80/FF` byte-exactを検証。
 - Python reference implementation: 既存26件を全件実行。
 - YAML parse、PowerShell AST parse、`git diff --check`、Gitleaks、Semgrep。
-- macOS実機は未確認とし、POSIX fallbackはUbuntuとsynthetic fixtureで測る。
+- Windows PowerShell 7のextended-length aliasで同一rootの別表記を回帰化し、
+  native macOS 15のPR / post-main runでも確認する。
 
 ## 完了条件
 
@@ -68,4 +75,5 @@ scanner境界だけを強化する。
 ## 残リスク
 
 marker scannerは既知の高signal patternを検出するbest-effort safety netであり、
-すべてのsecret形式を保証するものではない。macOS実機での挙動は未確認。
+すべてのsecret形式を保証するものではない。native CIは固定したmacOS 15 imageの
+PowerShell 7経路を対象とし、別image、別PowerShell、実ファイルシステム構成は未確認。
