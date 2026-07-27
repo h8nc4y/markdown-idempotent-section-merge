@@ -22,7 +22,7 @@ Reference implementation for the markdown-idempotent-section-merge skill:
   or extra heading in the block, an unclosed code fence in either, unclosed
   explicit-end raw HTML block, unclosed leading YAML/TOML frontmatter,
   CR-only line endings, or a possible setext heading (``===`` / ``---``
-  underline) inside the replaced span.
+  underline) inside the canonical block or replaced span.
 - Applying the same merge twice leaves the file byte-identical
   (apply-twice-diff-zero). The target's line-ending style (LF or CRLF) and
   UTF-8 BOM are preserved; when only mixed line endings need normalizing,
@@ -637,6 +637,12 @@ def validate_block(block_lines):
             "block ends inside an unclosed raw HTML block type %d; close its "
             "explicit end condition before merging" % region_scan[3]
         )
+
+    # block内setextを初回appendで受理すると、次回replaceだけが同じ構造を
+    # 拒否してapply-twiceが収束しない。target spanと同じ保守的走査・固定診断を
+    # 書込み前に適用し、append/replaceのvalidation境界を一致させる。
+    _reject_setext_in_span(block_lines, 0, len(block_lines))
+
     boundaries = [
         index
         for index, line in enumerate(block_lines)
