@@ -168,10 +168,11 @@ well defined:
    part of the merged content, not configuration that can drift from it.
    A CommonMark closing-hash sequence is not canonical here.
 2. **Exactly one H1/H2-level heading inside the block** — its own first
-   line (literal-region-aware count). A block with a second H2 would silently
-   absorb the next section on the following run; a block with an H1 would
-   cut itself in two. Fenced or raw-HTML `## ...` literals inside the block
-   are fine — they do not count.
+   ATX line (literal-region-aware count). A block with a second ATX or setext
+   H1/H2 would silently absorb or divide a section on a later run. Reject
+   possible setext headings before the first write so append and replace use
+   the same validation boundary. Fenced or raw-HTML heading literals inside
+   the block are fine — they do not count.
 3. **At most one unambiguous copy of the heading in the target** (outside
    literal regions). If the document already contains duplicates or a
    1–3-space / closing-hash alias of the managed H2, stop and report instead
@@ -185,11 +186,14 @@ well defined:
    extends the section to EOF (a replace would rewrite the whole visually
    swallowed tail), and in a block it would swallow whatever follows the
    merged section. Both are malformed input: stop and report.
-6. **No setext headings inside the replaced span.** A `===` or `---`
-   underline directly under a paragraph line is a real heading that a
-   line-by-line `^#` scan cannot see as a boundary. Replacing across one
-   would delete a section boundary without any error — stop and report
-   instead (convert the heading to ATX form, or use fixed markers).
+6. **No setext headings inside the canonical block or replaced span.**
+   A `===` or `---` underline directly under paragraph text is a real
+   heading that a line-by-line `^#` scan cannot see as a boundary. Accepting
+   one in a newly appended block would make the next run fail instead of
+   converge; replacing across one would delete a section boundary. Stop
+   before writing in both cases (convert the heading to ATX form, or use
+   fixed markers). See
+   [`docs/setext-block-heading-contract.md`](docs/setext-block-heading-contract.md).
 7. **No unclosed leading frontmatter.** When the first line is exact `---`
    (YAML) or `+++` (TOML), ignore its heading-looking lines only through the
    first exact matching closer. If no closer exists, stop instead of guessing
@@ -280,7 +284,8 @@ Malformed input — a duplicate or syntactically aliased managed heading in the
 target, a closing-hash or extra heading in the block, an unclosed fence or
 explicit-end raw HTML block in either, ambiguous type 7 context, unclosed
 leading YAML/TOML frontmatter, CR-only line endings, or a possible setext
-heading inside the span — exits with code 2 instead of guessing. Exact leading
+heading inside the block or replaced span — exits with code 2 instead of
+guessing. Exact leading
 YAML (`---` through `---` or `...`) and TOML (`+++` through `+++`) frontmatter
 plus the supported raw HTML profile are excluded from heading scans, so
 literal headings cannot become replacement anchors.
@@ -333,9 +338,11 @@ the scanner back into the trap, these tests fail first.
   content. See
   [`docs/indented-managed-heading-contract.md`](docs/indented-managed-heading-contract.md).
 - Setext headings (`Heading` + `===`/`---` underline) are never boundaries;
-  when one may sit inside the replaced span the reference refuses to merge
-  (invariant 6) rather than delete it silently. Convert setext headings to
-  ATX form, or switch to fixed markers.
+  when one may sit inside the canonical block or replaced span the reference
+  refuses before writing (invariant 6). This avoids first-append/next-run
+  divergence and silent boundary deletion. Convert setext headings to ATX
+  form, or switch to fixed markers. See
+  [`docs/setext-block-heading-contract.md`](docs/setext-block-heading-contract.md).
 - Only a document-leading, column-0, exact-line frontmatter form is recognized:
   YAML `---` with `---`/`...`, or TOML `+++` with `+++`. Delimiters with
   trailing text/space, frontmatter later in a document, and other metadata

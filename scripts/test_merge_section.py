@@ -214,6 +214,65 @@ class BlockValidationTests(unittest.TestCase):
         self.assertIn("\n## Notes\n", merged)
         self.assertNotIn("## Notes  ", merged)
 
+    def test_setext_block_is_rejected_before_apply_twice_can_diverge(self):
+        cases = (
+            ("h1", "==="),
+            ("h2", "---"),
+            ("indented-h1", "   ===\t"),
+            ("indented-h2", "  ---  "),
+        )
+        documents = (
+            ("append", ""),
+            (
+                "replace",
+                "## Managed\n\nOld body.\n\n## Next\n\nKeep this section.\n",
+            ),
+        )
+        for operation, document in documents:
+            for label, underline in cases:
+                with self.subTest(operation=operation, label=label):
+                    block = (
+                        "## Managed\n\n"
+                        "Synthetic nested heading\n"
+                        f"{underline}\n\n"
+                        "Body that must never be written.\n"
+                    )
+
+                    # 初回appendを許すと次回replaceだけが拒否して収束しない。
+                    # append/replaceともwrite前の同じ固定診断へ止める。
+                    with self.assertRaisesRegex(
+                        merge_section.MergeError,
+                        "possible setext heading .* inside the section",
+                    ):
+                        merge_section.merge(document, block)
+
+    def test_setext_block_diagnostic_does_not_reflect_utf8_content(self):
+        marker = "合成入力マーカー"
+        block = "## Managed\n\n%s\n---\n" % marker
+
+        with self.assertRaises(merge_section.MergeError) as caught:
+            merge_section.merge("# Synthetic document\n", block)
+
+        self.assertIn("possible setext heading", str(caught.exception))
+        self.assertNotIn(marker, str(caught.exception))
+
+    def test_setext_literals_inside_block_literal_regions_remain_valid(self):
+        blocks = (
+            (
+                "fence",
+                "## Managed\n\n```\nSynthetic heading\n---\n```\n",
+            ),
+            (
+                "raw-html",
+                "## Managed\n\n<!--\nSynthetic heading\n---\n-->\n",
+            ),
+        )
+        for label, block in blocks:
+            with self.subTest(label=label):
+                merged, action = merge_section.merge("", block)
+                self.assertEqual(action, "appended")
+                self.assertEqual(merged, block)
+
 
 class IndentedManagedHeadingIdentityTests(unittest.TestCase):
     """管理対象 H2 の1〜3 space variantを安全側へ畳み込む契約。"""
@@ -2857,6 +2916,33 @@ class FileLevelTests(unittest.TestCase):
         result = self._run_cli(str(target), str(block))
         self.assertEqual(result.returncode, 2)
         self.assertIn("exactly one", result.stderr)
+
+    def test_cli_rejects_utf8_setext_block_without_writing(self):
+        original = (
+            b"\xef\xbb\xbf# Synthetic document\r\n\r\n"
+            b"Existing bytes must stay unchanged.\r\n"
+        )
+        block_bytes = (
+            "## 管理節\r\n\r\n"
+            "合成の子見出し\r\n"
+            "---\t\r\n\r\n"
+            "書き込まれてはいけない本文。\r\n"
+        ).encode("utf-8")
+        target = self._write("target.md", original)
+        block = self._write("section.md", block_bytes)
+
+        # 通常実行とdry-runを同じwrite前validationへ通し、BOM/CRLFを含む
+        # targetとUTF-8 blockの双方がbyte単位で不変であることを固定する。
+        for check_arg in ((), ("--check",)):
+            with self.subTest(check=bool(check_arg)):
+                target.write_bytes(original)
+                block.write_bytes(block_bytes)
+                result = self._run_cli(str(target), str(block), *check_arg)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("possible setext heading", result.stderr)
+                self.assertNotIn("合成の子見出し", result.stderr)
+                self.assertEqual(target.read_bytes(), original)
+                self.assertEqual(block.read_bytes(), block_bytes)
 
     def test_cli_rejects_unclosed_frontmatter_without_writing(self):
         original = b"---\ntitle: Synthetic guide\n## Managed\nowner: example\n"

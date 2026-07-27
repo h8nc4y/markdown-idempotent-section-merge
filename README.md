@@ -252,8 +252,8 @@ frontmatter・fence・CommonMark HTML type 1〜7 を排他的に走査します�
 
 - 安全な境界2方式: frontmatter/fence/raw HTML 状態を追跡する見出し走査
   （literal region 内は見出しと数えない）、または固定 begin/end マーカー
-- 不変条件: 境界は `^##[^#]`（`###` を除外）、正本ブロック内の H2 見出しは
-  ちょうど1個
+- 不変条件: 境界は `^##[^#]`（`###` を除外）、正本ブロック内の H1/H2
+  見出しは先頭の ATX H2 ちょうど1個（possible setext も書込み前に拒否）
 - 検証レシピ: 同じマージを2回当てて `git diff` が空（apply-twice-diff-zero）、
   見出し出現数 = 1、`git diff --stat` が対象1ファイルのみ
 - テスト済み参照実装（Python 標準ライブラリのみ）と、素朴実装が実際に
@@ -276,7 +276,9 @@ frontmatter・fence・CommonMark HTML type 1〜7 を排他的に走査します�
   as malformed input — CommonMark runs such a fence to EOF, so a merge
   would silently rewrite the visually swallowed tail. The same
   stop-and-report rule covers CR-only line endings and a possible setext
-  heading inside the replaced span.
+  heading inside the canonical block or replaced span. Rejecting the block
+  before its first append keeps validation stable on every run. See
+  [`docs/setext-block-heading-contract.md`](docs/setext-block-heading-contract.md).
 - Recognized raw HTML types 1–5 must reach their explicit end condition in
   both target and block. CommonMark itself permits EOF termination, but this
   stricter mutation rule prevents an appended managed H2 from being swallowed
@@ -326,7 +328,10 @@ frontmatter・fence・CommonMark HTML type 1〜7 を排他的に走査します�
   container content. See
   [`docs/indented-managed-heading-contract.md`](docs/indented-managed-heading-contract.md).
 - Setext headings are never boundaries; a possible setext heading inside
-  the replaced span makes the merge refuse instead of deleting it.
+  the canonical block or replaced span makes the merge refuse instead of
+  accepting it once and failing on the next run, or deleting it during
+  replacement. See
+  [`docs/setext-block-heading-contract.md`](docs/setext-block-heading-contract.md).
 - Frontmatter recognition is intentionally narrow: only exact column-0
   delimiters on the first line are supported (YAML `---` with `---`/`...`, or
   TOML `+++` with `+++`). Later or non-exact delimiter lines remain ordinary
