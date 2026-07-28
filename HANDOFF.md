@@ -50,7 +50,9 @@ workflow / validator / CI pin契約をClass M docs-firstで同期する。
 - 専用契約をrequired fileへ追加し、READMEのlabel + relative pathをassert。
   正本上のPS7 / PS5.1 readinessとrepository scan、Python 152 PASS / 14 skip、
   BOM、diff-checkは再度PASS。
-- 修正後fixture GREEN、再freeze review、PR / main CIはこれから実測する。
+- 修正後fixture GREEN: 契約欠落とlink破損をPS7 / PS5.1の各engineが
+  exit 1と単一の固定診断で拒否した。fixture worktreeは削除済み。
+- 再freeze review、PR / main CIはこれから実測する。
 - 既知のrepository外bounded log 5件はcleanup再試行禁止。今回も触れない。
 
 ## Key files
@@ -62,6 +64,6 @@ workflow / validator / CI pin契約をClass M docs-firstで同期する。
 
 ## Next steps
 
-1. P2修正をcommitし、欠落/リンク切れfixtureが両engineで拒否されることを確認する。
+1. P2修正のGREEN証跡をcommitする。
 2. 新しいexact freezeで独立reviewを受ける。
 3. PR / 3 OS CIでNode.js 20 annotation 0件を確認し、merge / post-mainを完了する。
