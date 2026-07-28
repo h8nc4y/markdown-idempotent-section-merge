@@ -2,10 +2,10 @@
 
 ## Current goal
 
-進行中: 正本 `## Managed` と意味上同じ `##  Managed` / `##	Managed` を
-別見出しとしてappendするgapをClass Mで修正する。block側の非canonical
+完了: 正本 `## Managed` と意味上同じ `##  Managed` / `##	Managed` を
+別見出しとしてappendするgapをClass Mで修正。block側の非canonical
 separatorは初回書込み前に拒否し、target側aliasはindent / closing-hashとの
-組合せを含めてfail closedにする。
+組合せを含めてfail closed化し、PR #14をmainへ統合した。
 
 ## Delivered
 
@@ -19,6 +19,9 @@ separatorは初回書込み前に拒否し、target側aliasはindent / closing-h
   新たに解釈しない。
 - API / CLI回帰で複数space/tab、0〜3 indent、closing-hash組合せ、
   UTF-8固定診断、BOM/CRLF no-write、既存境界を固定した。
+- README、英語版/日本語版SKILL、専用契約文書を同期。
+- PR #14をsquash merge。mainは`316a0cd`、feature commitsは
+  `39b7645` / `2ce652a`。
 
 ## Decisions
 
@@ -39,12 +42,20 @@ separatorは初回書込み前に拒否し、target側aliasはindent / closing-h
 - focused RED: 新規8 tests中、契約維持2件だけPASS、24 subcaseがFAIL。
 - focused GREEN: 8 PASS。indent 0〜3 × separator 7種 × closing 3種の
   synthetic cross-product 84件もPASS。Python full: 152 PASS / 14 skip。
-- PS7 / PS5.1: OSS readiness、private-marker self-test、repository scanが
-  すべてPASS、stderr 0。
+- 独立review: tree `c57d3a79` / stable patch-id `85c65cc2`一致、
+  P0 / P1 / P2 / P3 = 0、clearance YES。
+- PR CI run `30338637459`: Windows / Ubuntu / macOS 15すべてSUCCESS。
+- main CI run `30339006865`: Windows / Ubuntu / macOS 15すべてSUCCESS。
+- post-main Python: 152 PASS / 14 skip。
+- post-main OSS readinessとrepository private-marker scanは、
+  PS7 / PS5.1ともPASS。
+- private-marker self-testはfeature freezeでPS7 / PS5.1ともPASS、
+  stderr 0。post-mainではshared host負荷を避ける指示に従い再実行していない。
 - Gitleaks: worktree約1.00 MB / history 19 commits・約723 KB、0 leaks。
   Semgrep: Python 151 rules / 2 targets、0 findings。
-- 検証用bounded log 5件はapproval layerが削除を拒否したため、repo外へ未回収。
-- exact freeze独立review、PR / main CIはこれから実測する。
+- main `316a0cd`とorigin/main一致、tracked tree cleanを確認。
+- 検証用bounded log 5件はapproval layerが削除を拒否したためrepo外へ残存。
+  repository / worktreeには含まれない。
 
 ## Key files
 
@@ -55,5 +66,5 @@ separatorは初回書込み前に拒否し、target側aliasはindent / closing-h
 
 ## Next steps
 
-1. exact freezeを独立reviewする。
-2. PR / CI / merge / post-mainを完了する。
+1. main上でopen issue / PR、CI、TODO、既知制約を再確認する。
+2. 安全で価値の高い次のClass S/M改善を選び、別branchで進める。
