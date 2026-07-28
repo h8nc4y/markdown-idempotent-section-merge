@@ -353,6 +353,173 @@ class IndentedManagedHeadingIdentityTests(unittest.TestCase):
         self.assertEqual(h2_count(merged, "## Managed"), 1)
 
 
+class ManagedHeadingSeparatorIdentityTests(unittest.TestCase):
+    """opening ``##`` 後のASCII space/tab aliasを意味上の重複として拒否する。"""
+
+    block = "## Managed\n\nCanonical body.\n"
+    alias_error = "noncanonical managed H2 separator alias outside literal regions"
+    block_error = "block heading must use exactly one ASCII space before nonempty content"
+
+    def test_noncanonical_block_separators_fail_before_append_or_replace(self):
+        blocks = (
+            "##  Managed\n\nBody that must not be written.\n",
+            "##\tManaged\n\nBody that must not be written.\n",
+            "## \tManaged\n\nBody that must not be written.\n",
+            "##\t Managed  \n\nBody that must not be written.\n",
+        )
+        documents = (
+            ("append", "# Synthetic document\n"),
+            ("replace", "## Managed\n\nOld body.\n"),
+        )
+        for operation, document in documents:
+            for block in blocks:
+                with self.subTest(operation=operation, heading=repr(block.splitlines()[0])):
+                    # blockの初回appendだけを許すと非canonical形が正本として固定される。
+                    # append/replaceとも同じwrite前validationへ止める。
+                    with self.assertRaisesRegex(
+                        merge_section.MergeError,
+                        self.block_error,
+                    ):
+                        merge_section.merge(document, block)
+
+    def test_target_separator_aliases_fail_closed_with_indent_and_closing_hash(self):
+        candidates = (
+            "##  Managed",
+            "##\tManaged",
+            "## \t Managed",
+            " ##  Managed",
+            "  ##\t Managed",
+            "   ## \t\tManaged",
+            "##  Managed #",
+            "   ##\tManaged ###\t",
+        )
+        for candidate in candidates:
+            with self.subTest(candidate=repr(candidate)):
+                document = "%s\n\nOld semantic duplicate.\n" % candidate
+                with self.assertRaisesRegex(
+                    merge_section.MergeError,
+                    self.alias_error,
+                ):
+                    merge_section.merge(document, self.block)
+
+    def test_canonical_plus_alias_and_multiple_aliases_fail_closed(self):
+        documents = {
+            "canonical-plus-alias": (
+                "## Managed\n\nOld canonical.\n\n"
+                "##\tManaged\n\nOld semantic duplicate.\n"
+            ),
+            "multiple-aliases": (
+                " ##  Managed\n\nFirst.\n\n"
+                "   ##\t Managed ####\n\nSecond.\n"
+            ),
+        }
+        for label, document in documents.items():
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(
+                    merge_section.MergeError,
+                    self.alias_error,
+                ):
+                    merge_section.merge(document, self.block)
+
+    def test_fixed_diagnostics_do_not_reflect_utf8_heading_content(self):
+        marker = "合成見出しマーカー"
+        cases = (
+            (
+                "target",
+                "##\t%s\n\nOld body.\n" % marker,
+                "## %s\n\nCanonical body.\n" % marker,
+                self.alias_error,
+            ),
+            (
+                "block",
+                "# Synthetic document\n",
+                "##\t%s\n\nCanonical body.\n" % marker,
+                self.block_error,
+            ),
+        )
+        for label, document, block, expected_error in cases:
+            with self.subTest(label=label):
+                with self.assertRaises(merge_section.MergeError) as caught:
+                    merge_section.merge(document, block)
+                self.assertIn(expected_error, str(caught.exception))
+                self.assertNotIn(marker, str(caught.exception))
+
+    def test_literal_region_separator_aliases_remain_literals(self):
+        document = (
+            "---\n"
+            "example: |\n"
+            "  ##\tManaged\n"
+            "---\n\n"
+            "```text\n"
+            "##  Managed\n"
+            "```\n\n"
+            "<!--\n"
+            "   ## \t Managed ###\n"
+            "-->\n"
+        )
+        merged, action = merge_section.merge(document, self.block)
+        self.assertEqual(action, "appended")
+        self.assertTrue(merged.startswith(document))
+        self.assertEqual(h2_count(merged, "## Managed"), 1)
+
+    def test_exact_empty_hashtag_nonclosing_and_nonascii_contracts_remain(self):
+        # exact canonical H2は従来どおりその場で置換する。
+        merged, action = merge_section.merge(
+            "## Managed\n\nOld body.\n",
+            self.block,
+        )
+        self.assertEqual(action, "replaced")
+        self.assertNotIn("Old body.", merged)
+
+        # 空H2は既存の正本形として残し、末尾ASCII whitespaceだけは正規化する。
+        empty, empty_action = merge_section.merge(
+            "##\t \n\nOld empty body.\n",
+            "##\n\nCanonical empty body.\n",
+        )
+        self.assertEqual(empty_action, "replaced")
+        self.assertTrue(empty.startswith("##\n\nCanonical empty body.\n"))
+        empty_block, empty_block_action = merge_section.merge(
+            "# Synthetic document\n",
+            "##\t  \n\nCanonical empty body.\n",
+        )
+        self.assertEqual(empty_block_action, "appended")
+        self.assertTrue(empty_block.endswith("##\n\nCanonical empty body.\n"))
+
+        # CommonMark H2でないhashtag/非ASCII separatorと、本文末尾の#は別内容。
+        distinct_lines = (
+            "##Managed\n"
+            "##  Managed#\n"
+            "##\u00a0Managed\n"
+        )
+        appended, appended_action = merge_section.merge(
+            distinct_lines,
+            self.block,
+        )
+        self.assertEqual(appended_action, "appended")
+        self.assertTrue(appended.startswith(distinct_lines))
+        self.assertTrue(appended.endswith(self.block))
+
+        with self.assertRaisesRegex(
+            merge_section.MergeError,
+            "block must start with an H2 heading line",
+        ):
+            merge_section.merge("", "##\u00a0Managed\n\nNot an H2.\n")
+
+        # canonical separator後の非ASCII whitespaceは本文そのものであり、
+        # Pythonの広いstripで落としたりseparator aliasへ畳み込んだりしない。
+        for whitespace in ("\u00a0", "\u2003", "\u000c", "\u000b"):
+            with self.subTest(non_ascii=repr(whitespace)):
+                non_ascii_block = (
+                    "## %sManaged\n\nCanonical non-ASCII content.\n" % whitespace
+                )
+                non_ascii_merged, non_ascii_action = merge_section.merge(
+                    "# Synthetic document\n",
+                    non_ascii_block,
+                )
+                self.assertEqual(non_ascii_action, "appended")
+                self.assertTrue(non_ascii_merged.endswith(non_ascii_block))
+
+
 class ClosingHashManagedHeadingIdentityTests(unittest.TestCase):
     """CommonMarkのclosing-hash variantを同じ管理対象H2として安全側に扱う。"""
 
@@ -3046,6 +3213,58 @@ class FileLevelTests(unittest.TestCase):
                     result.stderr,
                 )
                 self.assertEqual(target.read_bytes(), original)
+
+    def test_cli_rejects_separator_alias_without_writing_bom_crlf(self):
+        marker = "合成管理節"
+        original = (
+            b"\xef\xbb\xbf# Synthetic document\r\n\r\n"
+            + ("  ##\t%s ###\t\r\n\r\n" % marker).encode("utf-8")
+            + b"Old semantic duplicate.\r\n"
+        )
+        target = self._write("target.md", original)
+        block = self._write(
+            "section.md",
+            ("## %s\n\nCanonical body.\n" % marker).encode("utf-8"),
+        )
+
+        # 通常実行とdry-runを同じidentity境界へ通し、拒否時のBOM/CRLFを維持する。
+        for check_arg in ((), ("--check",)):
+            with self.subTest(check=bool(check_arg)):
+                target.write_bytes(original)
+                result = self._run_cli(str(target), str(block), *check_arg)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(
+                    "noncanonical managed H2 separator alias outside literal "
+                    "regions",
+                    result.stderr,
+                )
+                self.assertNotIn(marker, result.stderr)
+                self.assertEqual(target.read_bytes(), original)
+
+    def test_cli_rejects_noncanonical_block_separator_without_writing(self):
+        marker = "合成管理節"
+        original = b"\xef\xbb\xbf# Synthetic document\r\n\r\nExisting body.\r\n"
+        block_bytes = ("##\t%s\r\n\r\nCanonical body.\r\n" % marker).encode(
+            "utf-8"
+        )
+        target = self._write("target.md", original)
+        block = self._write("section.md", block_bytes)
+
+        # block側も初回append前の固定診断へ止め、両入力のbytesを変えない。
+        for check_arg in ((), ("--check",)):
+            with self.subTest(check=bool(check_arg)):
+                target.write_bytes(original)
+                block.write_bytes(block_bytes)
+                result = self._run_cli(str(target), str(block), *check_arg)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(
+                    "block heading must use exactly one ASCII space before "
+                    "nonempty content",
+                    result.stderr,
+                )
+                self.assertNotIn(marker, result.stderr)
+                self.assertEqual(target.read_bytes(), original)
+                self.assertEqual(block.read_bytes(), block_bytes)
 
     def test_cli_preserves_non_ascii_heading_suffixes_with_bom_crlf(self):
         suffix_kinds = {

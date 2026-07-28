@@ -145,17 +145,18 @@ begin/end マーカー行（完全一致）の間を丸ごと置換し、begin �
 すべてのマージの前後でこれらを強制します。「置換 or 追記」が well-defined に
 なるのはこの条件下です:
 
-1. **ブロックは自身の素の `## 見出し` 行で始まる** — 見出しはマージされる
-   内容の一部であり、内容と乖離しうる設定値にしない。CommonMark の
-   closing-hash sequence はここでは正本にしない。
+1. **ブロックは自身の素の `## 見出し` 行で始まる** — 非空の本文ならopening
+   `##`との間はASCII space 1個だけにする（空 H2 は正確な`##`）。複数space、
+   tab、CommonMark のclosing-hash sequenceはここでは正本にしない。見出しは
+   マージされる内容の一部であり、内容と乖離しうる設定値にしない。
 2. **ブロック内の H1/H2 レベル見出しはちょうど1個** — 自身の1行目の
    ATX 見出し（literal region 対応で数える）。2個目の ATX / setext H1/H2 は
    後続実行で節を吸収または分断し得る。初回書込み前に possible setext 見出しを
    拒否し、append と replace の validation 境界を一致させる。ブロック内の
    フェンス/raw HTML 内の見出し風リテラルは問題ない — カウントされない。
 3. **ターゲット内の曖昧でない見出しはたかだか1個**（literal region 外）。
-   文書が既に重複、1〜3 space版、closing-hash版を含んでいるなら、片方だけ
-   「修復」してもう片方を残すのではなく、停止して報告する。
+   文書が既に重複、separator版、1〜3 space版、closing-hash版を含んでいるなら、
+   片方だけ「修復」してもう片方を残すのではなく、停止して報告する。
 4. **正規のセパレータ形状。** ブロックは末尾空行なしで保持し、後続の節との
    間には空行ちょうど1個を書く。読み取り範囲と書き込み形状が同じ正規形に
    収束することが、2回目の実行を no-op にする。
@@ -259,7 +260,8 @@ python scripts/merge_section.py TARGET.md SECTION.md            # その場で�
 python scripts/merge_section.py TARGET.md SECTION.md --check   # ドリフト検知
 ```
 
-`SECTION.md` が正本ブロックです: 1行目が正確な `## 見出し`。ターゲットの
+`SECTION.md` が正本ブロックです: 非空本文なら1行目はopening `##`との間が
+ASCII space 1個だけの正確な`## 見出し`、空 H2なら正確な`##`です。ターゲットの
 LF/CRLF スタイルと UTF-8 BOM は保持され、ターゲットが無ければ作成されます
 （空文書への追記）。壊れた入力 — ターゲット内の見出し重複・ブロック内の
 余分な見出し・どちらか一方でも未クローズのフェンス/explicit-end raw HTML・
@@ -301,8 +303,12 @@ python scripts/test_merge_section.py
 
 ## 制限事項
 
-- 正本節の見出し自体は列0の素の `## Name` 形式であること。block 側の
-  閉じハッシュ形式は拒否します。literal region 外に同じ見出し本文の
+- 正本節の見出し自体は列0の素の`## Name`形式で、非空本文とのseparatorは
+  ASCII space 1個だけにします。空 H2は正確な`##`です。block側の複数space /
+  tab separatorを拒否し、literal region外の同じ本文を持つseparator aliasも
+  通常実行と`--check`の双方でno-writeへ閉じます。詳細は
+  [`managed-heading-separator-contract.md`](managed-heading-separator-contract.md)。
+- block 側の閉じハッシュ形式は拒否します。literal region 外に同じ見出し本文の
   `## X ##` があれば同一性が曖昧なため、通常実行と `--check` の双方を
   no-write で拒否し、自動変換や重複削除はしません。詳細は
   [`closing-hash-managed-heading-contract.md`](closing-hash-managed-heading-contract.md)。
