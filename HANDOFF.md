@@ -21,6 +21,7 @@ workflow / validator / CI pin契約をClass M docs-firstで同期し、PR #16を
 - 専用契約をreadinessのrequired fileへ登録し、READMEのexact label +
   relative path linkも検証する。
 - PR #16をsquash merge。main merge commitは`b9adbc9`。
+- 統合証跡をPR #17で同期。closeout merge commitは`231e032`。
 
 ## Decisions
 
@@ -45,7 +46,7 @@ workflow / validator / CI pin契約をClass M docs-firstで同期し、PR #16を
 - Gitleaks: worktree約779.82 KB / history 24 commits・約748.73 KB、0 leaks。
   Semgrep `p/default`: 324 rules / 34 targets、0 findings。
 - full private-marker scanner self-testはrootの明示枠がないためローカル未実行。
-  PR / mainのbounded 3 OS CIでは全matrix jobが実行して成功した。
+  PR / mainのbounded 3 OS CIで実行した。
 - 初回freeze `d11b52ad`の独立reviewはP2=1 / clearance NO。新しい専用契約が
   `$requiredFiles`とREADME link assertionに未登録で、欠落/リンク切れが
   false-greenになると確認した。
@@ -65,8 +66,14 @@ workflow / validator / CI pin契約をClass M docs-firstで同期し、PR #16を
 - main CI run `30342620338`: Windows / Ubuntu / macOS 15すべてSUCCESS。
   同じAPI集計で全3 checkのannotations / warnings / setup-python Node.js 20該当が
   各0件であることを確認した。
+- closeout PR CI run `30343236403`: 3 OSすべてSUCCESS、全check annotations 0件。
+- final main CI run `30343770882` attempt 1はUbuntu / macOSがSUCCESS。
+  WindowsはPython 152 tests中1件でtarget metadata変化をfail closed検出した。
+  同一treeのPR WindowsはSUCCESS、ローカルfocused testは20 / 20 PASS。
+  failed jobだけをbounded rerunし、attempt 2は3 OSすべてSUCCESS。
+  最新attemptの全check annotations / warnings / setup-python Node.js 20該当は各0件。
 - post-main Pythonは152 PASS / 14 skip。PS7 / PS5.1 readinessとrepository
-  private-marker scanもPASS。local main = origin/main = `b9adbc9`、tracked tree clean。
+  private-marker scanもPASS。local main = origin/main = `231e032`、tracked tree clean。
 - 既知のrepository外bounded log 5件はcleanup再試行禁止。今回も触れない。
 
 ## Key files
