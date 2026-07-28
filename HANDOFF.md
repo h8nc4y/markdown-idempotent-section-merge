@@ -14,6 +14,11 @@ separatorは初回書込み前に拒否し、target側aliasはindent / closing-h
 - CommonMark 0.31.2 §4.2のraw heading content trimとExample 67を一次仕様として確認。
 - baseline Pythonは144 PASS / 14 skip。main `1971b1e`はorigin/mainと一致し、
   open PR / issueは各0、直近main CIはSUCCESS。
+- canonical block separator validationとtarget alias scanを追加。既存の
+  literal-region mask、closing-hash、indent契約を再利用し、inline Markdownは
+  新たに解釈しない。
+- API / CLI回帰で複数space/tab、0〜3 indent、closing-hash組合せ、
+  UTF-8固定診断、BOM/CRLF no-write、既存境界を固定した。
 
 ## Decisions
 
@@ -31,8 +36,15 @@ separatorは初回書込み前に拒否し、target側aliasはindent / closing-h
 
 - 未修正mainでsynthetic API再現: separator alias 5系統が`appended`。
 - baseline Python: 144 PASS / 14 skip。
-- 実装後にfocused RED/GREEN、Python full、PS7 / PS5.1 readinessとscanner、
-  Gitleaks / Semgrep、exact freeze独立review、PR / main CIを実測する。
+- focused RED: 新規8 tests中、契約維持2件だけPASS、24 subcaseがFAIL。
+- focused GREEN: 8 PASS。indent 0〜3 × separator 7種 × closing 3種の
+  synthetic cross-product 84件もPASS。Python full: 152 PASS / 14 skip。
+- PS7 / PS5.1: OSS readiness、private-marker self-test、repository scanが
+  すべてPASS、stderr 0。
+- Gitleaks: worktree約1.00 MB / history 19 commits・約723 KB、0 leaks。
+  Semgrep: Python 151 rules / 2 targets、0 findings。
+- 検証用bounded log 5件はapproval layerが削除を拒否したため、repo外へ未回収。
+- exact freeze独立review、PR / main CIはこれから実測する。
 
 ## Key files
 
@@ -43,6 +55,5 @@ separatorは初回書込み前に拒否し、target側aliasはindent / closing-h
 
 ## Next steps
 
-1. 専用contract、README、英語版/日本語版SKILL、CHANGELOGをdocs-firstで同期する。
-2. synthetic REDを追加し、既存identity contractを崩さない最小実装へ進む。
-3. exact freezeを独立review後、PR / CI / merge / post-mainを完了する。
+1. exact freezeを独立reviewする。
+2. PR / CI / merge / post-mainを完了する。

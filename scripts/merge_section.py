@@ -16,10 +16,12 @@ Reference implementation for the markdown-idempotent-section-merge skill:
   whitespace remains heading/line content and never closes a fence or
   closing-hash sequence by implicit Python ``strip`` behavior.
 - The merged block must contain exactly one H1/H2-level heading: its own
-  first line, a plain column-0 ``## Heading``.
+  first line, a plain column-0 ``## Heading`` with one ASCII separator space
+  before nonempty content (or exact ``##`` for an empty H2).
 - Malformed input is refused (exit 2) instead of guessed at: duplicate or
-  syntactically aliased copies of the heading in the target, a closing-hash
-  or extra heading in the block, an unclosed code fence in either, unclosed
+  syntactically aliased copies of the heading in the target, a noncanonical
+  separator, closing-hash, or extra heading in the block, an unclosed code
+  fence in either, unclosed
   explicit-end raw HTML block, unclosed leading YAML/TOML frontmatter,
   CR-only line endings, or a possible setext heading (``===`` / ``---``
   underline) inside the canonical block or replaced span.
@@ -566,6 +568,63 @@ def heading_occurrences(lines, heading):
     ]
 
 
+def _canonical_heading_content(heading):
+    """Return canonical H2 content, rejecting a noncanonical separator."""
+    if heading == "##":
+        # 空H2は既存の正本形。opening後がASCII whitespaceだけのblock行も、
+        # 呼出元の末尾trimでこの形へ正規化されるため、互換性を維持する。
+        return ""
+
+    # 非空本文の前はASCII spaceちょうど1個に限定する。CommonMarkは先頭の
+    # space/tabを本文から除くため、複数spaceやtabを受理すると同じ見出し本文の
+    # raw aliasを正本として書き込んでしまう。
+    if not heading.startswith("## ") or heading[3] in " \t":
+        raise MergeError(
+            "block heading must use exactly one ASCII space before nonempty "
+            "content"
+        )
+    return heading[3:]
+
+
+def _separator_alias_heading_occurrences(lines, heading, ignored_states):
+    """Indices of managed H2 aliases that differ only in opening separator."""
+    canonical_content = _canonical_heading_content(heading)
+    if not canonical_content:
+        # 空H2のspace/tab-only suffixは既存exact occurrenceが末尾trim後に扱う。
+        # closing-hash版は既存の専用guardへ委ね、ここで診断契約を変えない。
+        return []
+
+    occurrences = []
+    for index, line in enumerate(lines):
+        if ignored_states[index]:
+            continue
+
+        # CommonMark ATX H2の対象範囲だけを見る。4+ spaceや先頭tabは既存の
+        # bounded profile外なので、意味を推測して過剰拒否しない。
+        leading_spaces = len(line) - len(line.lstrip(" "))
+        if leading_spaces > 3:
+            continue
+        candidate = line[leading_spaces:]
+        if not _H2_RE.match(candidate):
+            continue
+
+        # closing sequenceを既存規則で除いた後、inline parse前にCommonMarkが
+        # 除くASCII space/tabだけをraw content両端から除く。inline Markdownの
+        # 別表現までは同一視しない。
+        content_source = _ATX_CLOSING_SEQUENCE_RE.sub("", candidate)
+        raw_content = content_source[2:]
+        separator_length = len(raw_content) - len(raw_content.lstrip(" \t"))
+        separator = raw_content[:separator_length]
+        content = raw_content.strip(" \t")
+
+        # separatorが正本の1 spaceなら、列indent / closing-hashの既存guardが
+        # それぞれの固定診断を担当する。ここではseparator自体がaliasの行だけを
+        # 新しい固定診断へ集約する。
+        if content == canonical_content and separator != " ":
+            occurrences.append(index)
+    return occurrences
+
+
 def _indented_heading_occurrences(lines, heading, ignored_states):
     """Indices of 1–3 ASCII-space variants of the managed heading."""
     occurrences = []
@@ -621,6 +680,7 @@ def validate_block(block_lines):
     if not block_lines or not _H2_RE.match(block_lines[0]):
         raise MergeError("block must start with an H2 heading line ('## ...')")
     heading = _rstrip_ascii_whitespace(block_lines[0])
+    _canonical_heading_content(heading)
     if _ATX_CLOSING_SEQUENCE_RE.search(heading):
         # block側でclosing-hashを正本にすると、素のH2とのidentityが曖昧な
         # まま固定される。書込み前にplain formへ直すことを要求する。
@@ -719,6 +779,19 @@ def merge(document_text, block_text):
             and _rstrip_ascii_whitespace(line) == heading
         )
     ]
+    separator_alias_occurrences = _separator_alias_heading_occurrences(
+        doc_lines,
+        heading,
+        ignored_states,
+    )
+    if separator_alias_occurrences:
+        # raw contentは同じでもopening後のspace/tab数が違うH2を別節として
+        # appendすると意味上の重複を作る。入力本文や行番号は反射せず拒否する。
+        raise MergeError(
+            "target contains a noncanonical managed H2 separator alias outside "
+            "literal regions; convert it to the plain heading form, rename it, "
+            "or deduplicate it before merging"
+        )
     indented_occurrences = _indented_heading_occurrences(
         doc_lines,
         heading,
