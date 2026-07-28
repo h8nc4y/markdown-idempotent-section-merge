@@ -158,8 +158,10 @@ python scripts/merge_section.py TARGET.md SECTION.md            # merge in place
 python scripts/merge_section.py TARGET.md SECTION.md --check   # drift check (exit 1 = stale)
 ```
 
-`SECTION.md` holds the canonical block: its first line is the exact
-`## Heading`. LF/CRLF style and a UTF-8 BOM are preserved byte-for-byte.
+`SECTION.md` holds the canonical block: its first line is exact `## Heading`
+with one ASCII space between the opening hashes and nonempty content (or exact
+`##` for an empty H2). Extra separator spaces/tabs are refused before the first
+write. LF/CRLF style and a UTF-8 BOM are preserved byte-for-byte.
 Changed content is flushed to an exclusive temporary file beside the target
 and committed with one atomic path replacement, so readers never observe a
 partially written document. Before content is written, a new temporary starts
@@ -292,6 +294,12 @@ frontmatter・fence・CommonMark HTML type 1〜7 を排他的に走査します�
   and closing-hash decisions; it is never silently trimmed into another
   structure. See
   [`docs/commonmark-ascii-whitespace-contract.md`](docs/commonmark-ascii-whitespace-contract.md).
+- CommonMark strips leading ASCII space/tab from ATX heading raw content.
+  Therefore a target `##  Name` or `##	Name` is a semantic alias of canonical
+  `## Name`, not a separate section. Noncanonical block separators and matching
+  target aliases fail closed before writing, including indentation and
+  closing-hash combinations. See
+  [`docs/managed-heading-separator-contract.md`](docs/managed-heading-separator-contract.md).
 - When only mixed line endings are normalized, the tool reports
   `normalized` / `would-normalize` — it never claims "unchanged" while
   rewriting bytes.
@@ -317,10 +325,15 @@ frontmatter・fence・CommonMark HTML type 1〜7 を排他的に走査します�
 
 ## Limitations
 
-- The managed heading must be a plain `## Name` at column 0. A closing-hash
-  block heading is rejected, and a matching `## Name ##` form outside literal
-  regions is treated as an ambiguous identity: both merge and `--check` refuse
-  without writing. See
+- The managed heading must be a plain `## Name` at column 0 with exactly one
+  ASCII separator space before nonempty content; exact `##` remains the empty
+  H2 form. Extra separator spaces/tabs in the block are rejected. A matching
+  separator alias outside literal regions makes both merge and `--check`
+  refuse without writing. See
+  [`docs/managed-heading-separator-contract.md`](docs/managed-heading-separator-contract.md).
+- A closing-hash block heading is rejected, and a matching `## Name ##` form
+  outside literal regions is treated as an ambiguous identity: both merge and
+  `--check` refuse without writing. See
   [`docs/closing-hash-managed-heading-contract.md`](docs/closing-hash-managed-heading-contract.md).
 - A matching managed H2 indented by 1–3 ASCII spaces outside literal regions
   is treated as an ambiguous identity and makes both merge and `--check`

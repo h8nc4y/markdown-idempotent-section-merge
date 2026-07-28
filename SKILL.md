@@ -164,9 +164,11 @@ with the same fence-aware scan.
 Enforce these before and after every merge; they make "replace or append"
 well defined:
 
-1. **The block starts with its own plain `## Heading` line** — the heading is
-   part of the merged content, not configuration that can drift from it.
-   A CommonMark closing-hash sequence is not canonical here.
+1. **The block starts with its own plain `## Heading` line** — use exactly one
+   ASCII space between the opening `##` and nonempty content (or exact `##` for
+   an empty H2). Extra separator spaces/tabs and a CommonMark closing-hash
+   sequence are not canonical here. The heading is part of the merged content,
+   not configuration that can drift from it.
 2. **Exactly one H1/H2-level heading inside the block** — its own first
    ATX line (literal-region-aware count). A block with a second ATX or setext
    H1/H2 would silently absorb or divide a section on a later run. Reject
@@ -175,8 +177,8 @@ well defined:
    the block are fine — they do not count.
 3. **At most one unambiguous copy of the heading in the target** (outside
    literal regions). If the document already contains duplicates or a
-   1–3-space / closing-hash alias of the managed H2, stop and report instead
-   of "fixing" one form and leaving another.
+   separator / 1–3-space / closing-hash alias of the managed H2, stop and
+   report instead of "fixing" one form and leaving another.
 4. **A canonical separator shape.** Store the block with no trailing blank
    lines; write exactly one blank line between the block and a following
    section. Reading range and writing shape then converge to the same
@@ -254,7 +256,8 @@ python scripts/merge_section.py TARGET.md SECTION.md            # merge in place
 python scripts/merge_section.py TARGET.md SECTION.md --check   # drift check
 ```
 
-`SECTION.md` is the canonical block: first line is the exact `## Heading`.
+`SECTION.md` is the canonical block: first line is exact `## Heading`, with one
+ASCII space before nonempty content, or exact `##` for an empty H2.
 The target's LF/CRLF style and UTF-8 BOM are preserved; a missing target is
 created (append into an empty document). Changed bytes are flushed to an
 exclusive same-directory temporary file and installed with one atomic replace.
@@ -281,7 +284,8 @@ state cannot prove either outcome. Cleanup checks identity immediately before
 unlink, but portable path-based unlink still has a final name-swap window;
 private unpredictable names and fail-closed artifact retention mitigate it.
 Malformed input — a duplicate or syntactically aliased managed heading in the
-target, a closing-hash or extra heading in the block, an unclosed fence or
+target, a noncanonical separator, closing-hash, or extra heading in the block,
+an unclosed fence or
 explicit-end raw HTML block in either, ambiguous type 7 context, unclosed
 leading YAML/TOML frontmatter, CR-only line endings, or a possible setext
 heading inside the block or replaced span — exits with code 2 instead of
@@ -326,8 +330,12 @@ the scanner back into the trap, these tests fail first.
 
 ## Limitations
 
-- The canonical heading itself must be a plain `## Name` at column 0.
-  A closing-hash block heading is rejected. A matching closing-hash form
+- The canonical heading itself must be a plain `## Name` at column 0 with one
+  ASCII separator space before nonempty content; exact `##` is the empty H2.
+  Extra block separator spaces/tabs are rejected, and a matching target
+  separator alias makes merge and `--check` refuse without writing. See
+  [`docs/managed-heading-separator-contract.md`](docs/managed-heading-separator-contract.md).
+- A closing-hash block heading is rejected. A matching closing-hash form
   (`## X ##`) outside literal regions is an ambiguous managed-heading
   identity, so merge and `--check` refuse without writing. The reference does
   not rewrite or deduplicate it automatically. See

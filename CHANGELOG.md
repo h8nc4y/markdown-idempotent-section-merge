@@ -8,6 +8,12 @@ The format loosely follows Keep a Changelog conventions.
 
 ### Changed
 
+- Refuse noncanonical space/tab separators between the opening `##` and
+  nonempty canonical block content before the first write. Treat target H2s
+  whose raw content becomes the same after CommonMark's leading/trailing ASCII
+  space/tab trim as semantic aliases, including 0–3-space indentation and
+  closing-hash combinations, while preserving literal regions, empty H2s,
+  hashtag lines, non-closing hashes, non-ASCII whitespace, and CRLF/BOM bytes.
 - Refuse a CommonMark closing-hash alias of the managed H2 before either
   merge or `--check` can append a semantic duplicate. Require the incoming
   block heading to use the plain form, include 0–3-space target aliases,
