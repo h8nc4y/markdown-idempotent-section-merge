@@ -42,7 +42,15 @@ workflow / validator / CI pin契約をClass M docs-firstで同期する。
 - Gitleaks: worktree約778.69 KB / history 21 commits・約744.65 KB、0 leaks。
   Semgrep `p/default`: 324 rules / 34 targets、0 findings。
 - full private-marker scanner self-testはrootの明示枠がないため未実行。
-- exact freeze review、PR / main CIはこれから実測する。
+- 初回freeze `d11b52ad`の独立reviewはP2=1 / clearance NO。新しい専用契約が
+  `$requiredFiles`とREADME link assertionに未登録で、欠落/リンク切れが
+  false-greenになると確認した。
+- owned detached fixturesのRED: 専用契約欠落、README link破損の各mutantが
+  修正前readinessでexit 0。
+- 専用契約をrequired fileへ追加し、READMEのlabel + relative pathをassert。
+  正本上のPS7 / PS5.1 readinessとrepository scan、Python 152 PASS / 14 skip、
+  BOM、diff-checkは再度PASS。
+- 修正後fixture GREEN、再freeze review、PR / main CIはこれから実測する。
 - 既知のrepository外bounded log 5件はcleanup再試行禁止。今回も触れない。
 
 ## Key files
@@ -54,6 +62,6 @@ workflow / validator / CI pin契約をClass M docs-firstで同期する。
 
 ## Next steps
 
-1. implementation差分をcommitしてexact freezeする。
-2. 独立reviewを受ける。
+1. P2修正をcommitし、欠落/リンク切れfixtureが両engineで拒否されることを確認する。
+2. 新しいexact freezeで独立reviewを受ける。
 3. PR / 3 OS CIでNode.js 20 annotation 0件を確認し、merge / post-mainを完了する。

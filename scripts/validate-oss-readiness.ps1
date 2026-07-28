@@ -812,6 +812,7 @@ $requiredFiles = @(
     'examples/before-after.md',
     'examples/verification-recipe.md',
     'docs/private-marker-scanner-hardening.md',
+    'docs/setup-python-node24-pin-contract.md',
     'scripts/merge_section.py',
     'scripts/test_merge_section.py',
     'scripts/private-marker-process.ps1',
@@ -840,6 +841,7 @@ Assert-FileContains -RelativePath 'README.md' -Pattern 'docs/SKILL\.ja\.md' -Des
 Assert-FileContains -RelativePath 'README.md' -Pattern 'merge_section\.py' -Description 'reference implementation usage'
 Assert-FileContains -RelativePath 'README.md' -Pattern 'docs/closing-hash-managed-heading-contract\.md' -Description 'link to the closing-hash identity contract'
 Assert-FileContains -RelativePath 'README.md' -Pattern 'docs/commonmark-ascii-whitespace-contract\.md' -Description 'link to the CommonMark ASCII whitespace contract'
+Assert-FileContains -RelativePath 'README.md' -Pattern '\[the setup-python Node\.js 24 pin contract\]\(docs/setup-python-node24-pin-contract\.md\)' -Description 'exact link to the setup-python Node.js 24 pin contract'
 Assert-FileContains -RelativePath 'SKILL.md' -Pattern '(?is)closing-hash block heading.*ambiguous managed-heading.*refuse without writing' -Description 'closing-hash fail-closed contract'
 Assert-FileContains -RelativePath 'docs/SKILL.ja.md' -Pattern '(?is)閉じハッシュ形式.*同一性が曖昧.*no-write' -Description 'Japanese closing-hash fail-closed contract'
 Assert-FileContains -RelativePath 'SKILL.md' -Pattern '(?is)ASCII-only block whitespace.*NBSP.*EM SPACE.*form feed.*vertical tab' -Description 'CommonMark ASCII-only block whitespace contract'
