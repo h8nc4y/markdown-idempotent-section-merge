@@ -12,7 +12,9 @@ GitHub-hosted macOS 15上で継続検証する。
   private-marker self-test / scan、committed-tree whitespaceを同じ順序で実行する。
 - Windows PowerShell 5.1 stepは既存どおりWindows runnerだけで実行する。
 - 全matrix jobは既存の25分timeoutとread-only `contents` permissionを維持する。
-- action revision、scanner timeout、検出範囲を変更しない。native失敗で実装差が
+- action revisionは40桁SHAで固定し、scanner timeoutと検出範囲を変更しない。
+  setup-pythonはNode.js 24を宣言する公式v7.0.0 release commitを使い、正本workflow、
+  validator、専用契約を同じreviewed changeで同期する。native失敗で実装差が
   判明した場合は、固定診断とcross-platform回帰を先に作り、最小修正だけを行う。
 - scannerのGit root判定は、Gitが返すworktree内判定とroot相対prefixを同じ
   bounded processで取得する。exact `true`と空prefixだけを受理し、macOSの
@@ -55,3 +57,6 @@ GitHub-hosted macOS 15上で継続検証する。
 - GitHub Docs「GitHub-hosted runners reference」（2026-07-26確認）:
   `macos-15`は標準GitHub-hosted macOS ARM64 runner labelとして掲載されている。
   https://docs.github.com/en/actions/reference/runners/github-hosted-runners
+- GitHub公式`actions/setup-python` v7.0.0（2026-07-28確認）:
+  immutable releaseのcommit `5fda3b95a4ea91299a34e894583c3862153e4b97`は
+  `action.yml`でNode.js 24を宣言する。

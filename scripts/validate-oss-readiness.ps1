@@ -254,7 +254,7 @@ function Test-WorkflowExecutionContract {
         '      - name: Check out repository',
         '        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5',
         '      - name: Set up Python',
-        '        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5',
+        '        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0',
         '        with:',
         "          python-version: '3.x'",
         '      - name: Validate OSS readiness',
@@ -397,7 +397,7 @@ function Assert-WorkflowExecutionContract {
         ) -join "`n"
         setup_python = @(
             '      - name: Set up Python',
-            '        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5',
+            '        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0',
             '        with:',
             "          python-version: '3.x'"
         ) -join "`n"
@@ -448,6 +448,32 @@ function Assert-WorkflowExecutionContract {
         ) {
             Add-Failure "Workflow contract self-test did not reject a missing $($requiredStep.Key) step."
         }
+    }
+
+    # supply-chain pinは値だけでなくimmutable形も自己検証する。mutable majorや
+    # warning原因だった旧revisionへ戻しても、正しいstep名/入力のdecoyで合格させない。
+    $canonicalSetupPythonUse =
+        '        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0'
+    $mutableSetupPythonMutation = $content.Replace(
+        $canonicalSetupPythonUse,
+        '        uses: actions/setup-python@v7'
+    )
+    if (
+        $mutableSetupPythonMutation -ceq $content -or
+        (Test-WorkflowExecutionContract -Content $mutableSetupPythonMutation)
+    ) {
+        Add-Failure 'Workflow contract self-test did not reject a mutable setup-python major tag.'
+    }
+
+    $oldSetupPythonMutation = $content.Replace(
+        $canonicalSetupPythonUse,
+        '        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5'
+    )
+    if (
+        $oldSetupPythonMutation -ceq $content -or
+        (Test-WorkflowExecutionContract -Content $oldSetupPythonMutation)
+    ) {
+        Add-Failure 'Workflow contract self-test did not reject the deprecated setup-python revision.'
     }
 
     $adjacentTestSteps = $requiredStepBlocks.readiness + "`n`n" + $requiredStepBlocks.reference_tests
@@ -786,6 +812,7 @@ $requiredFiles = @(
     'examples/before-after.md',
     'examples/verification-recipe.md',
     'docs/private-marker-scanner-hardening.md',
+    'docs/setup-python-node24-pin-contract.md',
     'scripts/merge_section.py',
     'scripts/test_merge_section.py',
     'scripts/private-marker-process.ps1',
@@ -814,6 +841,7 @@ Assert-FileContains -RelativePath 'README.md' -Pattern 'docs/SKILL\.ja\.md' -Des
 Assert-FileContains -RelativePath 'README.md' -Pattern 'merge_section\.py' -Description 'reference implementation usage'
 Assert-FileContains -RelativePath 'README.md' -Pattern 'docs/closing-hash-managed-heading-contract\.md' -Description 'link to the closing-hash identity contract'
 Assert-FileContains -RelativePath 'README.md' -Pattern 'docs/commonmark-ascii-whitespace-contract\.md' -Description 'link to the CommonMark ASCII whitespace contract'
+Assert-FileContains -RelativePath 'README.md' -Pattern '\[the setup-python Node\.js 24 pin contract\]\(docs/setup-python-node24-pin-contract\.md\)' -Description 'exact link to the setup-python Node.js 24 pin contract'
 Assert-FileContains -RelativePath 'SKILL.md' -Pattern '(?is)closing-hash block heading.*ambiguous managed-heading.*refuse without writing' -Description 'closing-hash fail-closed contract'
 Assert-FileContains -RelativePath 'docs/SKILL.ja.md' -Pattern '(?is)閉じハッシュ形式.*同一性が曖昧.*no-write' -Description 'Japanese closing-hash fail-closed contract'
 Assert-FileContains -RelativePath 'SKILL.md' -Pattern '(?is)ASCII-only block whitespace.*NBSP.*EM SPACE.*form feed.*vertical tab' -Description 'CommonMark ASCII-only block whitespace contract'
@@ -842,7 +870,7 @@ Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern 'tes
 Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern 'scan-private-markers\.ps1' -Description 'private marker scan in CI'
 Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern 'test-scan-private-markers\.ps1' -Description 'private marker scan self-test in CI'
 Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern '(?m)^\s*uses:\s*actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09(?:\s+#\s*v5)?\s*$' -Description 'exact immutable checkout action revision'
-Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern '(?m)^\s*uses:\s*actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065(?:\s+#\s*v5)?\s*$' -Description 'exact immutable setup-python action revision'
+Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern '(?m)^\s*uses:\s*actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97\s+#\s*v7\.0\.0\s*$' -Description 'exact immutable setup-python action revision'
 Assert-WorkflowExecutionContract
 
 Test-SkillFrontmatter
