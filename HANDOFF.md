@@ -15,6 +15,9 @@ workflow / validator / CI pin契約をClass M docs-firstで同期する。
   署名検証済みcommit `5fda3b95a4ea91299a34e894583c3862153e4b97`を直接指す。
 - 同commitの`action.yml`が`runs.using: node24`を宣言することを確認した。
 - 専用契約、README、macOS CI契約、CHANGELOGを実装前に同期した。
+- workflowのsetup-pythonだけをv7.0.0の40桁SHAへ更新した。
+- readiness validatorのcanonical workflow / exact revisionを同期し、
+  mutable `@v7`と旧v5 SHAへのin-memory mutation拒否を追加した。
 
 ## Decisions
 
@@ -30,7 +33,16 @@ workflow / validator / CI pin契約をClass M docs-firstで同期する。
 
 - baseline main CI: 3 OS SUCCESS、setup-python Node.js 20 warningは各check 1件。
 - official release / tag / commit / action metadata: 確認済み。
-- docs-first差分以降のRED / GREEN、local gate、PR / main CIはこれから実測する。
+- docs-first commit: `de71157`。
+- validator先行RED: PS7 / PS5.1ともexit 1。新immutable revision欠落と
+  canonical workflow不一致の2診断で旧workflowを拒否した。
+- workflow更新後GREEN: PS7 / PS5.1 readinessとrepository private-marker
+  scanがPASS。Python fullは152 PASS / 14 skip、PowerShell BOMと
+  `git diff --check`もPASS。
+- Gitleaks: worktree約778.69 KB / history 21 commits・約744.65 KB、0 leaks。
+  Semgrep `p/default`: 324 rules / 34 targets、0 findings。
+- full private-marker scanner self-testはrootの明示枠がないため未実行。
+- exact freeze review、PR / main CIはこれから実測する。
 - 既知のrepository外bounded log 5件はcleanup再試行禁止。今回も触れない。
 
 ## Key files
@@ -42,6 +54,6 @@ workflow / validator / CI pin契約をClass M docs-firstで同期する。
 
 ## Next steps
 
-1. docs-first差分をcommitする。
-2. validatorを先に新pinへ更新してREDを確認し、workflowを最小更新する。
-3. focused gateとexact freeze review後、PR / 3 OS CI / merge / post-mainを完了する。
+1. implementation差分をcommitしてexact freezeする。
+2. 独立reviewを受ける。
+3. PR / 3 OS CIでNode.js 20 annotation 0件を確認し、merge / post-mainを完了する。

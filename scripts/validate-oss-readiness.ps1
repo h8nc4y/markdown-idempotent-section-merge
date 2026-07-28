@@ -254,7 +254,7 @@ function Test-WorkflowExecutionContract {
         '      - name: Check out repository',
         '        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5',
         '      - name: Set up Python',
-        '        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5',
+        '        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0',
         '        with:',
         "          python-version: '3.x'",
         '      - name: Validate OSS readiness',
@@ -397,7 +397,7 @@ function Assert-WorkflowExecutionContract {
         ) -join "`n"
         setup_python = @(
             '      - name: Set up Python',
-            '        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5',
+            '        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0',
             '        with:',
             "          python-version: '3.x'"
         ) -join "`n"
@@ -448,6 +448,32 @@ function Assert-WorkflowExecutionContract {
         ) {
             Add-Failure "Workflow contract self-test did not reject a missing $($requiredStep.Key) step."
         }
+    }
+
+    # supply-chain pinは値だけでなくimmutable形も自己検証する。mutable majorや
+    # warning原因だった旧revisionへ戻しても、正しいstep名/入力のdecoyで合格させない。
+    $canonicalSetupPythonUse =
+        '        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0'
+    $mutableSetupPythonMutation = $content.Replace(
+        $canonicalSetupPythonUse,
+        '        uses: actions/setup-python@v7'
+    )
+    if (
+        $mutableSetupPythonMutation -ceq $content -or
+        (Test-WorkflowExecutionContract -Content $mutableSetupPythonMutation)
+    ) {
+        Add-Failure 'Workflow contract self-test did not reject a mutable setup-python major tag.'
+    }
+
+    $oldSetupPythonMutation = $content.Replace(
+        $canonicalSetupPythonUse,
+        '        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5'
+    )
+    if (
+        $oldSetupPythonMutation -ceq $content -or
+        (Test-WorkflowExecutionContract -Content $oldSetupPythonMutation)
+    ) {
+        Add-Failure 'Workflow contract self-test did not reject the deprecated setup-python revision.'
     }
 
     $adjacentTestSteps = $requiredStepBlocks.readiness + "`n`n" + $requiredStepBlocks.reference_tests
@@ -842,7 +868,7 @@ Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern 'tes
 Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern 'scan-private-markers\.ps1' -Description 'private marker scan in CI'
 Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern 'test-scan-private-markers\.ps1' -Description 'private marker scan self-test in CI'
 Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern '(?m)^\s*uses:\s*actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09(?:\s+#\s*v5)?\s*$' -Description 'exact immutable checkout action revision'
-Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern '(?m)^\s*uses:\s*actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065(?:\s+#\s*v5)?\s*$' -Description 'exact immutable setup-python action revision'
+Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern '(?m)^\s*uses:\s*actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97\s+#\s*v7\.0\.0\s*$' -Description 'exact immutable setup-python action revision'
 Assert-WorkflowExecutionContract
 
 Test-SkillFrontmatter
