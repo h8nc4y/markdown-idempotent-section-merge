@@ -2,9 +2,9 @@
 
 ## Current goal
 
-進行中: 3 OS CIで発生する`actions/setup-python`のNode.js 20廃止予告を、
-Node.js 24を宣言する公式v7.0.0 immutable commitへ更新して解消する。
-workflow / validator / CI pin契約をClass M docs-firstで同期する。
+完了: 3 OS CIで発生していた`actions/setup-python`のNode.js 20廃止予告を、
+Node.js 24を宣言する公式v7.0.0 immutable commitへの更新で解消した。
+workflow / validator / CI pin契約をClass M docs-firstで同期し、PR #16をmainへ統合した。
 
 ## Delivered
 
@@ -18,6 +18,9 @@ workflow / validator / CI pin契約をClass M docs-firstで同期する。
 - workflowのsetup-pythonだけをv7.0.0の40桁SHAへ更新した。
 - readiness validatorのcanonical workflow / exact revisionを同期し、
   mutable `@v7`と旧v5 SHAへのin-memory mutation拒否を追加した。
+- 専用契約をreadinessのrequired fileへ登録し、READMEのexact label +
+  relative path linkも検証する。
+- PR #16をsquash merge。main merge commitは`b9adbc9`。
 
 ## Decisions
 
@@ -39,9 +42,10 @@ workflow / validator / CI pin契約をClass M docs-firstで同期する。
 - workflow更新後GREEN: PS7 / PS5.1 readinessとrepository private-marker
   scanがPASS。Python fullは152 PASS / 14 skip、PowerShell BOMと
   `git diff --check`もPASS。
-- Gitleaks: worktree約778.69 KB / history 21 commits・約744.65 KB、0 leaks。
+- Gitleaks: worktree約779.82 KB / history 24 commits・約748.73 KB、0 leaks。
   Semgrep `p/default`: 324 rules / 34 targets、0 findings。
-- full private-marker scanner self-testはrootの明示枠がないため未実行。
+- full private-marker scanner self-testはrootの明示枠がないためローカル未実行。
+  PR / mainのbounded 3 OS CIでは全matrix jobが実行して成功した。
 - 初回freeze `d11b52ad`の独立reviewはP2=1 / clearance NO。新しい専用契約が
   `$requiredFiles`とREADME link assertionに未登録で、欠落/リンク切れが
   false-greenになると確認した。
@@ -52,7 +56,17 @@ workflow / validator / CI pin契約をClass M docs-firstで同期する。
   BOM、diff-checkは再度PASS。
 - 修正後fixture GREEN: 契約欠落とlink破損をPS7 / PS5.1の各engineが
   exit 1と単一の固定診断で拒否した。fixture worktreeは削除済み。
-- 再freeze review、PR / main CIはこれから実測する。
+- exact freeze: HEAD `7e97106` / tree `977e9b9` /
+  stable patch-id `d69bba7e81ca786e43ff7c02404773ab89989a3a`。
+  独立reviewはP0 / P1 / P2 / P3 = 0、clearance YES。
+- PR CI run `30342150088`: Windows / Ubuntu / macOS 15すべてSUCCESS。
+  GitHub APIで全3 checkのannotations / warnings / setup-python Node.js 20該当が
+  各0件であることを確認した。
+- main CI run `30342620338`: Windows / Ubuntu / macOS 15すべてSUCCESS。
+  同じAPI集計で全3 checkのannotations / warnings / setup-python Node.js 20該当が
+  各0件であることを確認した。
+- post-main Pythonは152 PASS / 14 skip。PS7 / PS5.1 readinessとrepository
+  private-marker scanもPASS。local main = origin/main = `b9adbc9`、tracked tree clean。
 - 既知のrepository外bounded log 5件はcleanup再試行禁止。今回も触れない。
 
 ## Key files
@@ -64,6 +78,5 @@ workflow / validator / CI pin契約をClass M docs-firstで同期する。
 
 ## Next steps
 
-1. P2修正のGREEN証跡をcommitする。
-2. 新しいexact freezeで独立reviewを受ける。
-3. PR / 3 OS CIでNode.js 20 annotation 0件を確認し、merge / post-mainを完了する。
+1. main上でopen issue / PR、CI、TODO、既知制約を再確認する。
+2. 安全で価値の高い次のClass S/M改善を選び、別branchで進める。
