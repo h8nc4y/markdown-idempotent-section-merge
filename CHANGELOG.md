@@ -8,6 +8,10 @@ The format loosely follows Keep a Changelog conventions.
 
 ### Changed
 
+- Pin `actions/setup-python` to the official immutable v7.0.0 commit whose
+  action runtime is Node.js 24. Keep the existing Python input, 3 OS matrix,
+  timeout, permissions, and Windows PowerShell 5.1 scope unchanged; update the
+  exact workflow validator and add mutable-tag / old-SHA rejection mutations.
 - Refuse noncanonical space/tab separators between the opening `##` and
   nonempty canonical block content before the first write. Treat target H2s
   whose raw content becomes the same after CommonMark's leading/trailing ASCII

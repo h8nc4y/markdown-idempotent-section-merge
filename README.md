@@ -427,6 +427,10 @@ under both PowerShell 7 and Windows PowerShell 5.1. Scanner PowerShell sources
 use UTF-8 with BOM so their Japanese intent comments parse consistently in
 both hosts. Each matrix job has a 25-minute timeout so the Windows PowerShell
 7 and 5.1 suites can finish sequentially under one bounded job.
+The Python setup step is pinned to the official `setup-python` v7.0.0
+immutable release commit, whose action runtime is Node.js 24. The exact pin,
+validator mutations, and CI annotation acceptance criteria are documented in
+[the setup-python Node.js 24 pin contract](docs/setup-python-node24-pin-contract.md).
 
 ## Contributing
 
