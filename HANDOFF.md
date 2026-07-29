@@ -1,9 +1,10 @@
 # HANDOFF
 
-## Current goal
+## Current state
 
-進行中: Windows所有権移譲後のtemporary保持テストをlive filesystemの
-metadata揺らぎから分離し、production fingerprintを緩和せず決定的にする。
+完了: Windows所有権移譲後のtemporary保持テストをlive filesystemの
+metadata揺らぎから分離し、production fingerprintを緩和せず決定的にした。
+PR #19は3 OS CI成功後に`main`へ統合済み。open issue / PRはない。
 
 ## Delivered
 
@@ -15,6 +16,8 @@ metadata揺らぎから分離し、production fingerprintを緩和せず決定�
 - 別のcross-platform testはtarget bytesを変えずmtimeだけを固定値へ変更し、
   production fingerprint差、metadata診断、commit helper未呼出しを検証する。
 - README / CHANGELOGへ責務分離とPython timestamp精度前提を同期した。
+- implementation commit: `a7877db36c542f95b7bd5c387149a23c2c13f06a`
+- PR #19 merge commit: `1cb78cde9ec4719e8b86f94dd88cb7dd7ce20bd4`
 
 ## Decisions
 
@@ -24,7 +27,6 @@ metadata揺らぎから分離し、production fingerprintを緩和せず決定�
   実際のfingerprint差をassertしてからproduction guardを通す。
 - Windowsの`st_ctime(_ns)`は現状creation timeでdeprecatedのため、
   test mutationの主信号にせずmtimeを使う。production fingerprintからは外さない。
-- upstreamは`origin/main`のためplain pushを使わず、topic branchを明示してpushする。
 
 ## Verification
 
@@ -42,7 +44,9 @@ metadata揺らぎから分離し、production fingerprintを緩和せず決定�
 - Gitleaks / Semgrepはfinding 0。独立reviewはP0〜P3=0、CLEARANCE YES。
 - ignored `scripts/__pycache__`はcleanup commandが実行前にpolicy拒否されたため、
   再試行せず保持する。tracked / untracked差分には含まれない。
-- changed treeの3 OS PR CI、stage / commit / push / PR / merge、post-main: 未確認。
+- PR run `30419432951`はWindows / Ubuntu / macOS 15の3 jobが成功。
+- post-mainはfull 153 tests、PowerShell 7 / 5.1 readiness・actual scan、
+  `main == origin/main`、clean status、scanner process 0を実測した。
 
 ## Key files
 
@@ -53,6 +57,6 @@ metadata揺らぎから分離し、production fingerprintを緩和せず決定�
 
 ## Next steps
 
-1. exact 4ファイルをstageし、global pre-commit guard経由でcommitする。
-2. topic branchを明示pushし、base `main`のPRで3 OS CIを確認する。
-3. merge後にpost-main検証とbranch / worktree cleanupを行う。
+1. 新しいissue、CI failure、依存更新、明示的な要求が届くまで本repoは待機状態。
+2. 将来の変更でもproduction fingerprintとfail-closed guardを緩和しない。
+3. 待機中は別projectの安全な開発ループへ進む。
