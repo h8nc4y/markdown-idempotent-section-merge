@@ -2118,6 +2118,20 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
         )
         unused.unlink()
         captured = {}
+        events = []
+
+        def assert_stable_target_snapshot(
+            target_path,
+            observed_stat,
+            observed_bytes,
+        ):
+            # このテストの責務はcommit helperへ所有権を渡した後のcleanupだけ。
+            # 実filesystemのtimestamp揺らぎを混ぜず、同じsnapshotを検証した事実を
+            # 引数と順序で固定してからcommit境界へ進める。
+            self.assertEqual(target_path, target)
+            self.assertIs(observed_stat, target_stat)
+            self.assertEqual(observed_bytes, original)
+            events.append("target-guard")
 
         def fail_after_ownership_transfer(
             _target,
@@ -2128,6 +2142,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
             _replacement_bytes,
         ):
             captured["temporary"] = temporary
+            events.append("commit")
             raise merge_section.AtomicCommitError(
                 "synthetic ambiguous commit",
                 committed=False,
@@ -2135,10 +2150,17 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                 artifacts=(temporary,),
             )
 
-        with mock.patch.object(
-            merge_section,
-            "_commit_temporary",
-            side_effect=fail_after_ownership_transfer,
+        with (
+            mock.patch.object(
+                merge_section,
+                "_assert_target_unchanged",
+                side_effect=assert_stable_target_snapshot,
+            ) as target_guard,
+            mock.patch.object(
+                merge_section,
+                "_commit_temporary",
+                side_effect=fail_after_ownership_transfer,
+            ) as commit,
         ):
             with self.assertRaises(merge_section.AtomicCommitError):
                 merge_section._atomic_write(
@@ -2148,9 +2170,75 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                     original,
                 )
 
+        target_guard.assert_called_once_with(target, target_stat, original)
+        commit.assert_called_once()
+        self.assertEqual(events, ["target-guard", "commit"])
         self.assertTrue(captured["temporary"].exists())
         self.assertEqual(captured["temporary"].read_bytes(), replacement)
         self.assertEqual(target.read_bytes(), original)
+
+    def test_target_metadata_only_drift_is_rejected_before_commit(self):
+        target, unused, target_stat, original, replacement = (
+            self._existing_commit()
+        )
+        unused.unlink()
+        original_target_guard = merge_section._assert_target_unchanged
+
+        def drift_target_then_assert(
+            target_path,
+            observed_stat,
+            observed_bytes,
+        ):
+            self.assertEqual(target_path, target)
+            self.assertIs(observed_stat, target_stat)
+            self.assertEqual(observed_bytes, original)
+
+            # Python 3.14もtimestampの実精度はfilesystem依存とするため、
+            # 微小差やsleepには頼らない。FATの2秒粒度でも区別できる固定mtimeを
+            # commit直前に設定し、実fingerprint差を確認して本番guardを通す。
+            stable_mtime_ns = 978_307_200_000_000_000
+            os.utime(
+                target_path,
+                ns=(observed_stat.st_atime_ns, stable_mtime_ns),
+            )
+            drifted_stat = target_path.lstat()
+            self.assertEqual(target_path.read_bytes(), observed_bytes)
+            self.assertNotEqual(
+                merge_section._stat_fingerprint(drifted_stat),
+                merge_section._stat_fingerprint(observed_stat),
+            )
+            return original_target_guard(
+                target_path,
+                observed_stat,
+                observed_bytes,
+            )
+
+        with (
+            mock.patch.object(
+                merge_section,
+                "_assert_target_unchanged",
+                side_effect=drift_target_then_assert,
+            ) as target_guard,
+            mock.patch.object(
+                merge_section,
+                "_commit_temporary",
+            ) as commit,
+        ):
+            with self.assertRaisesRegex(
+                merge_section.MergeError,
+                "target metadata changed during merge",
+            ):
+                merge_section._atomic_write(
+                    target,
+                    replacement,
+                    target_stat,
+                    original,
+                )
+
+        target_guard.assert_called_once_with(target, target_stat, original)
+        commit.assert_not_called()
+        self.assertEqual(target.read_bytes(), original)
+        self.assertEqual(self._files(), {"target.md"})
 
 
 class FileLevelTests(unittest.TestCase):
