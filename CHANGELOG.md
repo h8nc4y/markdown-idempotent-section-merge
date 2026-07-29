@@ -8,6 +8,12 @@ The format loosely follows Keep a Changelog conventions.
 
 ### Changed
 
+- Isolate the Windows ownership-transfer artifact-retention regression from
+  live filesystem timestamp drift by replacing the target guard with an
+  exact-argument spy in that test only. Add a separate cross-platform
+  metadata-only drift regression that proves unchanged bytes, a changed
+  production fingerprint, pre-commit refusal, and zero commit-helper calls;
+  keep the production fingerprint and fail-closed behavior unchanged.
 - Pin `actions/setup-python` to the official immutable v7.0.0 commit whose
   action runtime is Node.js 24. Keep the existing Python input, 3 OS matrix,
   timeout, permissions, and Windows PowerShell 5.1 scope unchanged; update the

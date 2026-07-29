@@ -408,6 +408,20 @@ pwsh -NoProfile -File ./scripts/test-scan-private-markers.ps1
 pwsh -NoProfile -File ./scripts/scan-private-markers.ps1
 ```
 
+The Windows ownership-transfer regression deliberately replaces the live
+target-metadata guard with an exact-argument spy. That test therefore measures
+only the `_commit_temporary` ownership boundary and retained recovery artifact,
+without depending on a runner filesystem's timestamp behavior. A separate
+cross-platform regression sets the target mtime through
+[`os.utime(ns=...)`](https://docs.python.org/3.14/library/os.html#os.utime),
+without changing its bytes, proves that the production fingerprint differs,
+then proves the real guard refuses the write before the commit helper is called.
+The production fingerprint remains strict. Python documents that the meaning
+and resolution of
+[`os.stat_result` timestamps](https://docs.python.org/3.14/library/os.html#os.stat_result)
+depend on the OS and filesystem, even though the `*_ns` fields are integer
+nanosecond representations.
+
 Bounded POSIX child cleanup uses the system `setsid` executable when
 available and a same-host `libc` `setsid(2)` gate otherwise. The self-test
 forces the fallback path, so macOS does not require an extra `setsid`
