@@ -253,6 +253,8 @@ function Test-WorkflowExecutionContract {
         '    steps:',
         '      - name: Check out repository',
         '        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5',
+        '        with:',
+        '          persist-credentials: false',
         '      - name: Set up Python',
         '        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0',
         '        with:',
@@ -385,7 +387,7 @@ function Assert-WorkflowExecutionContract {
 
     $content = Get-Content -LiteralPath $filePath -Raw -Encoding UTF8
     if (-not (Test-WorkflowExecutionContract -Content $content)) {
-        Add-Failure "$relativePath does not connect the exact OS matrix, matrix runner, timeout, and Windows-only PS5.1 step."
+        Add-Failure "$relativePath does not connect the exact OS matrix, credential-minimized checkout, matrix runner, timeout, and Windows-only PS5.1 step."
         return
     }
 
@@ -393,7 +395,9 @@ function Assert-WorkflowExecutionContract {
     $requiredStepBlocks = [ordered]@{
         checkout = @(
             '      - name: Check out repository',
-            '        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5'
+            '        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5',
+            '        with:',
+            '          persist-credentials: false'
         ) -join "`n"
         setup_python = @(
             '      - name: Set up Python',
@@ -448,6 +452,31 @@ function Assert-WorkflowExecutionContract {
         ) {
             Add-Failure "Workflow contract self-test did not reject a missing $($requiredStep.Key) step."
         }
+    }
+
+    # 後続stepは認証付きGit操作を行わないため、checkout tokenをGit設定へ残さない。
+    # exact contractに加えて省略とtrue化を実測し、将来の編集でもfail closedを保つ。
+    $canonicalPersistCredentials =
+        '          persist-credentials: false'
+    $missingPersistCredentialsMutation = $content -replace (
+        '(?m)^' + [regex]::Escape($canonicalPersistCredentials) + '\r?\n'
+    ), ''
+    if (
+        $missingPersistCredentialsMutation -ceq $content -or
+        (Test-WorkflowExecutionContract -Content $missingPersistCredentialsMutation)
+    ) {
+        Add-Failure 'Workflow contract self-test did not reject missing checkout credential isolation.'
+    }
+
+    $persistCredentialsTrueMutation = $content.Replace(
+        $canonicalPersistCredentials,
+        '          persist-credentials: true'
+    )
+    if (
+        $persistCredentialsTrueMutation -ceq $content -or
+        (Test-WorkflowExecutionContract -Content $persistCredentialsTrueMutation)
+    ) {
+        Add-Failure 'Workflow contract self-test did not reject persisted checkout credentials.'
     }
 
     # supply-chain pinは値だけでなくimmutable形も自己検証する。mutable majorや

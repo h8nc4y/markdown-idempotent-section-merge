@@ -8,6 +8,11 @@ The format loosely follows Keep a Changelog conventions.
 
 ### Changed
 
+- Stop the validation workflow from persisting checkout credentials because
+  no later step performs an authenticated Git operation. Keep the triggers,
+  read-only permission, 3 OS matrix, 25-minute timeout, commands, and immutable
+  action revisions unchanged; extend the exact validator with omission and
+  `true` mutations for the checkout input.
 - Isolate the Windows ownership-transfer artifact-retention regression from
   live filesystem timestamp drift by replacing the target guard with an
   exact-argument spy in that test only. Add a separate cross-platform

@@ -445,6 +445,9 @@ The Python setup step is pinned to the official `setup-python` v7.0.0
 immutable release commit, whose action runtime is Node.js 24. The exact pin,
 validator mutations, and CI annotation acceptance criteria are documented in
 [the setup-python Node.js 24 pin contract](docs/setup-python-node24-pin-contract.md).
+The checkout step also keeps its immutable revision and sets
+`persist-credentials: false`; later steps only inspect committed content and
+never need an authenticated Git operation.
 
 ## Contributing
 
