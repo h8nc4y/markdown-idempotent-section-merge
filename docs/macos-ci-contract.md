@@ -12,6 +12,7 @@ GitHub-hosted macOS 15上で継続検証する。
   private-marker self-test / scan、committed-tree whitespaceを同じ順序で実行する。
 - Windows PowerShell 5.1 stepは既存どおりWindows runnerだけで実行する。
 - 全matrix jobは既存の25分timeoutとread-only `contents` permissionを維持する。
+  checkout後に認証付きGit操作はないため、checkout credentialは保持しない。
 - action revisionは40桁SHAで固定し、scanner timeoutと検出範囲を変更しない。
   setup-pythonはNode.js 24を宣言する公式v7.0.0 release commitを使い、正本workflow、
   validator、専用契約を同じreviewed changeで同期する。native失敗で実装差が
@@ -31,6 +32,8 @@ GitHub-hosted macOS 15上で継続検証する。
   trigger / permission preludeと、checkout、Python setup、readiness、reference
   tests、scanner self-test / scan、Windows-only PS5.1、whitespaceの各stepを
   name + uses / shell + run/bodyの同じ順序で1回ずつ固定する。
+  checkoutはimmutable SHAだけでなく`persist-credentials: false`も同じstep内へ
+  固定し、省略または`true`への変更をself-testで拒否する。
   root keyは`name` / `on` / `permissions` / `jobs`、direct jobは`validate`
   だけに固定し、workflow拡張時は実装とvalidatorを同じreviewed changeで更新する。
 
@@ -39,6 +42,8 @@ GitHub-hosted macOS 15上で継続検証する。
 - local Windowsで既存PS7 / PS5.1 gateとworkflow静的契約を確認する。
 - `runs-on`固定化、macOSを除いたmatrix＋block scalar decoy、反転したPS5.1
   condition＋block scalar decoyをin-memory mutationし、readiness自身が拒否する。
+- checkoutの`persist-credentials: false`省略と`true`化もin-memory mutationし、
+  readiness自身が拒否する。
 - `validate`をroot block scalarへ移した非実行job、重複`runs-on`、
   重複`timeout-minutes`、inline / quoted / spaced形式の重複root `jobs`も拒否する。
   1 / 3-space親へ正しい文字列をnestしたdecoyも拒否し、CRLFとroot commentは

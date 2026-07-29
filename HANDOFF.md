@@ -2,6 +2,10 @@
 
 ## Current state
 
+完了: CI-CRED-01でvalidation workflowのcheckout credential保持を無効化し、
+省略・`true`化をexact workflow validatorのmutationでfail closedにした。
+trigger、permission、3 OS matrix、timeout、commands、action revisionは変更していない。
+
 完了: Windows所有権移譲後のtemporary保持テストをlive filesystemの
 metadata揺らぎから分離し、production fingerprintを緩和せず決定的にした。
 PR #19は3 OS CI成功後に`main`へ統合済み。open issue / PRはない。
@@ -30,6 +34,11 @@ PR #19は3 OS CI成功後に`main`へ統合済み。open issue / PRはない。
 
 ## Verification
 
+- CI-CRED-01の許可差分を除くworkflow契約はbaseと一致し、PowerShell 7 /
+  Windows PowerShell 5.1のOSS readinessはPASS。Pythonは153 tests /
+  skipped 14、両PowerShellのscanner self-test / actual scan、Gitleaksの
+  history 25 commits / worktree、Semgrep `p/default`がPASS。
+  actionlintは既知のpolicy拒否に従い未確認。
 - focused 2 tests: PASS。
 - root再検証のfull suite: `Ran 153 tests`、`OK (skipped=14)`。
 - PowerShell 7 / Windows PowerShell 5.1のOSS readiness: PASS。
@@ -50,6 +59,8 @@ PR #19は3 OS CI成功後に`main`へ統合済み。open issue / PRはない。
 
 ## Key files
 
+- `.github/workflows/validate.yml`
+- `scripts/validate-oss-readiness.ps1`
 - `scripts/test_merge_section.py`
 - `README.md`
 - `CHANGELOG.md`

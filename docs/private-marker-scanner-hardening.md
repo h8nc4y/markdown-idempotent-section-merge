@@ -46,7 +46,8 @@ scanner境界だけを強化する。
 7. 034固有のGitHub URL allowlistは本リポジトリ自身だけとする。既存のdotfile
    fallbackと`.env`、`.pem`、`.key`、`.npmrc`、extensionless textの走査を維持する。
 8. workflowのthird-party actionはfull commit SHAへ固定し、major versionは
-   review用commentとして残す。
+   review用commentとして残す。後続に認証付きGit操作がないcheckoutはcredentialを
+   Git設定へ保持しない。
 9. Git worktree rootはpath文字列の一致ではなく、同じbounded Git processが返す
    exact `--is-inside-work-tree=true`と空`--show-prefix`で確認する。OSが祖先aliasを
    physical pathへ解決してもrootとして扱い、non-empty prefixとnon-worktreeは拒否する。
