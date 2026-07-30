@@ -25,6 +25,8 @@ PR #19は3 OS CI成功後に`main`へ統合済み。
 - PR #19 merge commit: `1cb78cde9ec4719e8b86f94dd88cb7dd7ce20bd4`
 - CI-CRED-01 implementation commit: `415ec9107f6b55339b9877f9042d0e2a75911aee`
 - PR #21 merge commit: `0f53792f808d4d675d31205fcf4c7fba376116cc`
+- PR #22 documentation closeout merge commit:
+  `bd5d624cee8aba69241e34607154c98c005b1b94`
 
 ## Decisions
 
@@ -44,8 +46,12 @@ PR #19は3 OS CI成功後に`main`へ統合済み。
   actionlintは既知のpolicy拒否に従い未確認。
 - PR run `30486362573`とpost-main run `30486786030`は、
   Windows / Ubuntu / macOS 15の3 jobが成功。
-- `main` / `origin/main` / GitHub `main`は
-  `0f53792f808d4d675d31205fcf4c7fba376116cc`で一致し、tracked treeはclean。
+- PR #22のpost-main run `30512694658`は、
+  Windows / Ubuntu / macOS 15の3 jobが成功。
+- 2026-07-30 19:54 JSTの監査時点では、
+  local `main` / `origin/main` / GitHub `main`がPR #22 merge commitに一致し、
+  tracked treeはclean。これは監査時点の歴史証跡であり、
+  後続commitの現在SHAを固定する記述ではない。
   CI-CRED-01のlocal / remote task branchは存在しない。
 - focused 2 tests: PASS。
 - root再検証のfull suite: `Ran 153 tests`、`OK (skipped=14)`。
