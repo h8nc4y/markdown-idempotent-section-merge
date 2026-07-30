@@ -1652,7 +1652,10 @@ def _assert_target_unchanged(target, target_stat, original_bytes):
     else:
         if path_before is None:
             raise MergeError("target disappeared during merge")
-        if _stat_fingerprint(path_before) != _stat_fingerprint(target_stat):
+        # Windowsではpath lstatとhandle fstatのtimestamp精度が異なり得る。
+        # 前段はstable identityだけを比較し、直後のdescriptor snapshotで
+        # full fingerprintをstrictに照合する。
+        if not _same_file_identity(path_before, target_stat):
             raise MergeError("target metadata changed during merge")
 
     try:
