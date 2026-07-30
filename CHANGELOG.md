@@ -13,6 +13,12 @@ The format loosely follows Keep a Changelog conventions.
   again during the pre-commit conflict reread, require exact expected-length
   bounds for temporary/recovery verification, and reject stable over-limit
   input with exit 2 and a fixed path-free diagnostic before mutation.
+- Compare only stable file identity in the preliminary target path check so
+  Windows `lstat` / handle `fstat` timestamp precision differences do not
+  produce a false metadata-conflict result. Keep the final descriptor snapshot
+  fingerprint strict, and make Windows state-machine fixtures capture the
+  expected temporary metadata from the same protected write handle as
+  production.
 - Stop the validation workflow from persisting checkout credentials because
   no later step performs an authenticated Git operation. Keep the triggers,
   read-only permission, 3 OS matrix, 25-minute timeout, commands, and immutable

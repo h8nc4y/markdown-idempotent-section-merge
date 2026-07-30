@@ -1444,10 +1444,19 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                 stream.write(replacement)
                 stream.flush()
                 os.fsync(stream.fileno())
+                temporary_stat = os.fstat(stream.fileno())
         else:
             temporary = self.dir / ".target.md.pending"
             temporary.write_bytes(replacement)
-        return target, temporary, target.lstat(), original, replacement
+            temporary_stat = temporary.lstat()
+        return (
+            target,
+            temporary,
+            target.lstat(),
+            original,
+            temporary_stat,
+            replacement,
+        )
 
     def _missing_commit(self):
         target = self.dir / "target.md"
@@ -1580,7 +1589,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
         self.assertEqual(self._files(), set())
 
     def test_windows_commit_success_removes_verified_backup(self):
-        target, temporary, target_stat, original, replacement = (
+        target, temporary, target_stat, original, temporary_stat, replacement = (
             self._existing_commit()
         )
         captured = {}
@@ -1603,7 +1612,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                 temporary,
                 target_stat,
                 original,
-                temporary.lstat(),
+                temporary_stat,
                 replacement,
             )
 
@@ -1614,7 +1623,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "POSIX FIFOs are not portable")
     def test_windows_commit_rejects_fifo_swap_before_private_temp_read(self):
-        target, temporary, target_stat, original, replacement = (
+        target, temporary, target_stat, original, temporary_stat, replacement = (
             self._existing_commit()
         )
         original_open = merge_section._open_regular_read_descriptor
@@ -1645,7 +1654,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                     temporary,
                     target_stat,
                     original,
-                    temporary.lstat(),
+                    temporary_stat,
                     replacement,
                 )
 
@@ -1656,7 +1665,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
         self.assertTrue(stat.S_ISFIFO(temporary.lstat().st_mode))
 
     def test_windows_commit_success_retains_backup_when_cleanup_fails(self):
-        target, temporary, target_stat, original, replacement = (
+        target, temporary, target_stat, original, temporary_stat, replacement = (
             self._existing_commit()
         )
         captured = {}
@@ -1685,7 +1694,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                     temporary,
                     target_stat,
                     original,
-                    temporary.lstat(),
+                    temporary_stat,
                     replacement,
                 )
 
@@ -1697,7 +1706,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
         self.assertFalse(temporary.exists())
 
     def test_windows_commit_success_retains_recovery_when_target_is_unverified(self):
-        target, temporary, target_stat, original, replacement = (
+        target, temporary, target_stat, original, temporary_stat, replacement = (
             self._existing_commit()
         )
         captured = {}
@@ -1721,7 +1730,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                     temporary,
                     target_stat,
                     original,
-                    temporary.lstat(),
+                    temporary_stat,
                     replacement,
                 )
 
@@ -1736,7 +1745,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
         self.assertEqual(temporary.read_bytes(), replacement)
 
     def test_windows_error_1176_cleans_owned_unmoved_artifacts(self):
-        target, temporary, target_stat, original, replacement = (
+        target, temporary, target_stat, original, temporary_stat, replacement = (
             self._existing_commit()
         )
         with mock.patch.object(
@@ -1750,7 +1759,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                     temporary,
                     target_stat,
                     original,
-                    temporary.lstat(),
+                    temporary_stat,
                     replacement,
                 )
 
@@ -1781,9 +1790,11 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                         stream.write(replacement)
                         stream.flush()
                         os.fsync(stream.fileno())
+                        temporary_stat = os.fstat(stream.fileno())
                 else:
                     temporary = case_dir / ".target.md.pending"
                     temporary.write_bytes(replacement)
+                    temporary_stat = temporary.lstat()
 
                 patch_arguments = (
                     {"side_effect": result}
@@ -1801,7 +1812,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                             temporary,
                             target.lstat(),
                             original,
-                            temporary.lstat(),
+                            temporary_stat,
                             replacement,
                         )
 
@@ -1813,7 +1824,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                 )
 
     def test_windows_error_1176_retains_artifacts_when_target_changed(self):
-        target, temporary, target_stat, original, replacement = (
+        target, temporary, target_stat, original, temporary_stat, replacement = (
             self._existing_commit()
         )
         captured = {}
@@ -1836,7 +1847,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                     temporary,
                     target_stat,
                     original,
-                    temporary.lstat(),
+                    temporary_stat,
                     replacement,
                 )
 
@@ -1851,7 +1862,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
         self.assertTrue(captured["backup"].exists())
 
     def test_windows_error_reports_verified_replacement_as_committed(self):
-        target, temporary, target_stat, original, replacement = (
+        target, temporary, target_stat, original, temporary_stat, replacement = (
             self._existing_commit()
         )
         captured = {}
@@ -1873,7 +1884,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                     temporary,
                     target_stat,
                     original,
-                    temporary.lstat(),
+                    temporary_stat,
                     replacement,
                 )
 
@@ -1884,7 +1895,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
         self.assertEqual(captured["backup"].read_bytes(), original)
 
     def test_windows_error_reports_unresolved_state_as_unknown(self):
-        target, temporary, target_stat, original, replacement = (
+        target, temporary, target_stat, original, temporary_stat, replacement = (
             self._existing_commit()
         )
         captured = {}
@@ -1909,7 +1920,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                     temporary,
                     target_stat,
                     original,
-                    temporary.lstat(),
+                    temporary_stat,
                     replacement,
                 )
 
@@ -1923,7 +1934,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
         self.assertEqual(temporary.read_bytes(), replacement)
 
     def test_windows_error_1177_restores_without_replacement(self):
-        target, temporary, target_stat, original, replacement = (
+        target, temporary, target_stat, original, temporary_stat, replacement = (
             self._existing_commit()
         )
         captured = {}
@@ -1958,7 +1969,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                     temporary,
                     target_stat,
                     original,
-                    temporary.lstat(),
+                    temporary_stat,
                     replacement,
                 )
 
@@ -1969,7 +1980,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
         self.assertEqual(self._files(), {"target.md"})
 
     def test_windows_error_1177_restore_interrupt_is_reconciled(self):
-        target, temporary, target_stat, original, replacement = (
+        target, temporary, target_stat, original, temporary_stat, replacement = (
             self._existing_commit()
         )
         captured = {}
@@ -2001,7 +2012,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                     temporary,
                     target_stat,
                     original,
-                    temporary.lstat(),
+                    temporary_stat,
                     replacement,
                 )
 
@@ -2013,7 +2024,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
         self.assertFalse(captured["backup"].exists())
 
     def test_windows_error_1177_does_not_overwrite_new_target(self):
-        target, temporary, target_stat, original, replacement = (
+        target, temporary, target_stat, original, temporary_stat, replacement = (
             self._existing_commit()
         )
         captured = {}
@@ -2039,7 +2050,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                     temporary,
                     target_stat,
                     original,
-                    temporary.lstat(),
+                    temporary_stat,
                     replacement,
                 )
 
@@ -2054,7 +2065,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
         self.assertEqual(temporary.read_bytes(), replacement)
 
     def test_windows_error_1177_target_inspection_failure_is_structured(self):
-        target, temporary, target_stat, original, replacement = (
+        target, temporary, target_stat, original, temporary_stat, replacement = (
             self._existing_commit()
         )
         captured = {}
@@ -2090,7 +2101,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                     temporary,
                     target_stat,
                     original,
-                    temporary.lstat(),
+                    temporary_stat,
                     replacement,
                 )
 
@@ -2104,7 +2115,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
         self.assertEqual(captured["backup"].read_bytes(), original)
 
     def test_windows_error_1177_retains_temp_when_recovery_cleanup_fails(self):
-        target, temporary, target_stat, original, replacement = (
+        target, temporary, target_stat, original, temporary_stat, replacement = (
             self._existing_commit()
         )
 
@@ -2146,7 +2157,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                     temporary,
                     target_stat,
                     original,
-                    temporary.lstat(),
+                    temporary_stat,
                     replacement,
                 )
 
@@ -2158,7 +2169,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "ownership transfer is Windows-only")
     def test_atomic_write_does_not_delete_temp_after_commit_ownership_transfer(self):
-        target, unused, target_stat, original, replacement = (
+        target, unused, target_stat, original, _temporary_stat, replacement = (
             self._existing_commit()
         )
         unused.unlink()
@@ -2223,7 +2234,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
         self.assertEqual(target.read_bytes(), original)
 
     def test_target_metadata_only_drift_is_rejected_before_commit(self):
-        target, unused, target_stat, original, replacement = (
+        target, unused, target_stat, original, _temporary_stat, replacement = (
             self._existing_commit()
         )
         unused.unlink()
@@ -3093,6 +3104,62 @@ class FileLevelTests(unittest.TestCase):
         self.assertNotIn(-1, read_sizes)
         self.assertIn(b"new.", target.read_bytes())
 
+    def test_commit_precheck_tolerates_path_timestamp_precision_difference(self):
+        original = b"# Doc\n\n## Notes\n\nold.\n"
+        target = self._write("target.md", original)
+        target_stat, observed = merge_section._read_regular_file_snapshot(
+            target,
+            max_bytes=merge_section._MAX_TARGET_BYTES,
+            oversize_error=merge_section._TARGET_OVERSIZE_ERROR,
+        )
+        original_inspect = merge_section._inspect_target
+        inspect_calls = 0
+        drifted_path_stat = None
+
+        class PathTimestampPrecisionView:
+            """Expose one path-only timestamp delta while preserving identity."""
+
+            def __init__(self, source):
+                self._source = source
+
+            def __getattr__(self, name):
+                if name == "st_mtime_ns":
+                    return self._source.st_mtime_ns + 1
+                return getattr(self._source, name)
+
+        def inspect_with_path_precision_drift(path, **kwargs):
+            nonlocal inspect_calls, drifted_path_stat
+            inspect_calls += 1
+            current = original_inspect(path, **kwargs)
+            if inspect_calls == 1:
+                drifted_path_stat = PathTimestampPrecisionView(current)
+                return drifted_path_stat
+            return current
+
+        # Windowsではpath lstatとhandle fstatのtimestamp精度が異なり得る。
+        # preliminary guardはidentityだけを見て、最終descriptor fingerprintは
+        # 従来どおりstrictに比較する二段階契約を固定する。
+        with mock.patch.object(
+            merge_section,
+            "_inspect_target",
+            side_effect=inspect_with_path_precision_drift,
+        ):
+            merge_section._assert_target_unchanged(
+                target,
+                target_stat,
+                observed,
+            )
+
+        self.assertGreaterEqual(inspect_calls, 3)
+        self.assertTrue(
+            merge_section._same_file_identity(drifted_path_stat, target_stat)
+        )
+        self.assertNotEqual(
+            merge_section._stat_fingerprint(drifted_path_stat),
+            merge_section._stat_fingerprint(target_stat),
+        )
+        self.assertEqual(target.read_bytes(), original)
+
     def test_replacement_snapshot_uses_exact_expected_byte_bound(self):
         target = self.dir / "target.md"
         replacement = b"# Doc\n\n## Notes\n\nnew.\n"
@@ -3101,7 +3168,7 @@ class FileLevelTests(unittest.TestCase):
             stream.write(replacement)
             stream.flush()
             os.fsync(stream.fileno())
-        expected_stat = temporary.lstat()
+            expected_stat = os.fstat(stream.fileno())
         original_snapshot = merge_section._read_regular_file_snapshot
 
         with mock.patch.object(
