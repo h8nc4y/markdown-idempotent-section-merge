@@ -8,6 +8,11 @@ The format loosely follows Keep a Changelog conventions.
 
 ### Changed
 
+- Bound raw no-follow reads to 8 MiB for the target and 2 MiB for the
+  canonical block, including BOM and line-ending bytes. Apply the target bound
+  again during the pre-commit conflict reread, require exact expected-length
+  bounds for temporary/recovery verification, and reject stable over-limit
+  input with exit 2 and a fixed path-free diagnostic before mutation.
 - Stop the validation workflow from persisting checkout credentials because
   no later step performs an authenticated Git operation. Keep the triggers,
   read-only permission, 3 OS matrix, 25-minute timeout, commands, and immutable

@@ -239,6 +239,12 @@ snapshot として読みます。シンボリックリンク、Windows reparse p
 EFS 暗号化済み Windows ターゲット、通常ファイル以外、複数ハードリンクを
 持つファイルは、その意味の変更・blocking read・平文一時ファイルへの露出を
 避けるため、内容の読込み前に拒否します。
+UTF-8 BOM と LF/CRLF を含む raw bytes を数え、ターゲットは 8 MiB
+（8,388,608 bytes）、正本ブロックは 2 MiB（2,097,152 bytes）を上限とします。
+上限ちょうどは受理します。安定した上限超過入力は、通常実行と `--check` の
+双方で、書込み前に固定・path-free診断と終了コード2で拒否します。確定直前の
+競合再確認でも同じ8 MiBターゲット上限を適用し、一時・回復snapshotは既知の
+期待payload長だけを読みます。
 確定直前にターゲットの identity・metadata・全バイトを再確認します。この
 再確認より前に完了した変更は検出できますが、再確認と置換は別操作です。
 既存ターゲットの lost update を防ぐ必要がある場合は、すべての writer を
@@ -340,6 +346,10 @@ python scripts/test_merge_section.py
   拒否します — バイト冪等性が破れるため。CRLF と LF が混在するファイルは
   CRLF として扱われ（CRLF が1つでもあれば CRLF）、初回に `normalized`
   として一度だけ書き換えられ、2回目以降は安定します。
+- 8 MiBターゲット・2 MiB正本ブロックの上限はraw snapshot I/Oの境界であり、
+  Pythonのpeak memory上限ではありません。decode、line/state list、merge
+  output、CRLF正規化でraw入力より多くのmemoryを使います。別のline-count
+  budgetとstreaming parserは参照実装の範囲外です。
 - ターゲットは未作成、またはハードリンク数1の通常ファイルに限ります。
   シンボリックリンクと複数ハードリンクのファイルは拒否するため、更新対象の
   通常ファイルを明示してください。
