@@ -2,86 +2,62 @@
 
 ## Current state
 
-完了: CI-CRED-01でvalidation workflowのcheckout credential保持を無効化し、
-省略・`true`化をexact workflow validatorのmutationでfail closedにした。
-trigger、permission、3 OS matrix、timeout、commands、action revisionは変更していない。
-PR #21は3 OS CI成功後に`main`へ統合済み。open issue / PRはない。
+進行中: INPUT-BUDGET-01（Class M）で、Markdown mergeのraw input readを
+target 8 MiB・canonical block 2 MiBへ固定した。topic branch
+`fix/bound-merge-input-bytes`で実装・文書同期・local full suiteまで完了。
+commit、push、PR、3 OS CI、main統合は未確認。
 
-完了: Windows所有権移譲後のtemporary保持テストをlive filesystemの
-metadata揺らぎから分離し、production fingerprintを緩和せず決定的にした。
-PR #19は3 OS CI成功後に`main`へ統合済み。
+## Objective / impact
+
+- hostile・誤投入の巨大Markdownを無制限に`read()`せず、BOM・改行を含むraw
+  bytes段階でfail closedにする。
+- target初回、block初回、commit直前target再読を独立budgetへ通す。
+- over-limit拒否ではexit 2、固定・path-free診断、no-write、private temp 0を保つ。
 
 ## Delivered
 
-- baseline: main CI `30343770882` attempt 1だけWindowsで、所有権移譲テストが
-  `_commit_temporary`到達前に`target metadata changed during merge`で停止した。
-  同一SHA attempt 2と現main `c1785c2`のrun `30345451320`は3 OS成功。
-- 所有権移譲テストは`_assert_target_unchanged`をexact-argument spyへ分離し、
-  target guard → commit境界の順序と、例外後artifact保持だけを検証する。
-- 別のcross-platform testはtarget bytesを変えずmtimeだけを固定値へ変更し、
-  production fingerprint差、metadata診断、commit helper未呼出しを検証する。
-- README / CHANGELOGへ責務分離とPython timestamp精度前提を同期した。
-- implementation commit: `a7877db36c542f95b7bd5c387149a23c2c13f06a`
-- PR #19 merge commit: `1cb78cde9ec4719e8b86f94dd88cb7dd7ce20bd4`
-- CI-CRED-01 implementation commit: `415ec9107f6b55339b9877f9042d0e2a75911aee`
-- PR #21 merge commit: `0f53792f808d4d675d31205fcf4c7fba376116cc`
-- PR #22 documentation closeout merge commit:
-  `bd5d624cee8aba69241e34607154c98c005b1b94`
-
-## Decisions
-
-- `scripts/merge_section.py`と`_stat_fingerprint`は変更しない。
-- Python 3.14 docsどおり`*_ns`の表現とfilesystem実精度を区別する。
-  微小差やsleepを使わず、FATの2秒粒度でも区別できる2001-01-01のmtimeを使い、
-  実際のfingerprint差をassertしてからproduction guardを通す。
-- Windowsの`st_ctime(_ns)`は現状creation timeでdeprecatedのため、
-  test mutationの主信号にせずmtimeを使う。production fingerprintからは外さない。
+- 共通snapshot helperの`max_bytes` / `oversize_error`を必須keyword化し、
+  全readを`limit + 1`へ固定。無制限defaultは残していない。
+- target 8 MiB、block 2 MiB。exact limitは成功し、limit+1は書込み前に拒否する。
+- replacement/recovery snapshotは`len(expected_bytes)`を上限にし、Windows
+  helperのunfingerprinted fallbackを削除した。
+- commit前はappeared/disappeared/metadata driftをsize診断より優先し、
+  snapshot前後の二重guardを維持する。
+- README / SECURITY / SKILL / 日本語SKILL / CHANGELOGを同期した。
 
 ## Verification
 
-- CI-CRED-01の許可差分を除くworkflow契約はbaseと一致し、PowerShell 7 /
-  Windows PowerShell 5.1のOSS readinessはPASS。Pythonは153 tests /
-  skipped 14、両PowerShellのscanner self-test / actual scan、Gitleaksの
-  history 25 commits / worktree、Semgrep `p/default`がPASS。
-  actionlintは既知のpolicy拒否に従い未確認。
-- PR run `30486362573`とpost-main run `30486786030`は、
-  Windows / Ubuntu / macOS 15の3 jobが成功。
-- PR #22のpost-main run `30512694658`は、
-  Windows / Ubuntu / macOS 15の3 jobが成功。
-- 2026-07-30 19:54 JSTの監査時点では、
-  local `main` / `origin/main` / GitHub `main`がPR #22 merge commitに一致し、
-  tracked treeはclean。これは監査時点の歴史証跡であり、
-  後続commitの現在SHAを固定する記述ではない。
-  CI-CRED-01のlocal / remote task branchは存在しない。
-- focused 2 tests: PASS。
-- root再検証のfull suite: `Ran 153 tests`、`OK (skipped=14)`。
-- PowerShell 7 / Windows PowerShell 5.1のOSS readiness: PASS。
-- focused 100反復ずつ: 200 / 200 PASS、skip 0。
-- owned mutation: ownership transfer前の`temporary = None`を外すと1 / 1 RED
-  （artifactがouter cleanupに削除される）。復元後production diff 0。
-- changed 4 files: strict UTF-8、LF、NULなし。`git diff --check` PASS。
-- local host: Python 3.11.15。Python 3.14 / `py` launcherはPATH上で利用不可。
-- Python 3.14.6公式docsで`os.utime(ns=...)`とfilesystem依存のtimestamp精度を確認。
-- repo scanner self-test / actual scanはPowerShell 7と5.1の双方でPASSし、
-  各実行前後のscanner processは0。
-- Gitleaks / Semgrepはfinding 0。独立reviewはP0〜P3=0、CLEARANCE YES。
-- ignored `scripts/__pycache__`はcleanup commandが実行前にpolicy拒否されたため、
-  再試行せず保持する。tracked / untracked差分には含まれない。
-- PR run `30419432951`はWindows / Ubuntu / macOS 15の3 jobが成功。
-- post-mainはfull 153 tests、PowerShell 7 / 5.1 readiness・actual scan、
-  `main == origin/main`、clean status、scanner process 0を実測した。
+- 変更前baseline: 153 tests、`OK (skipped=14)`。
+- RED: 新規4 testsが定数不存在で4 errorになることを確認。
+- focused input/temporary/symlink: 7 tests、`OK (skipped=2)`。
+- focused + Windows state-machine: 25 tests、`OK (skipped=1)`。
+- 変更後full suite: 159 tests、`OK (skipped=15)`。
+- PowerShell 7 / Windows PowerShell 5.1 readiness: PASS。
+- 両PowerShellのprivate-marker scanner self-test / actual scan: PASS。
+- Gitleaks: history 20 commits・worktreeともfinding 0。
+- Semgrep `p/default`: 324 rules / 34 files / finding 0。
+- 変更8ファイル: strict UTF-8、LF、BOM/NULなし。compileall、CLI help、
+  `git diff --check`: PASS。
+- 独立source review / tests-docs review: P0〜P3 CLEAR。
 
-## Key files
+## Decisions / residual risks
 
-- `.github/workflows/validate.yml`
-- `scripts/validate-oss-readiness.ps1`
+- 8/2 MiBは互換性より安全性を優先したraw I/O境界。blockは1節だけなのでtargetと
+  同額にしない。
+- byte budgetはpeak-memory保証ではない。decode、line/state list、merge output、
+  CRLF正規化で増幅する。line-count budget / streaming parserは後続候補。
+- commit再確認とreplaceはCASではなく、既存の最終lost-update windowは残る。
+- Windows native以外と3 OS CIは未確認。Release / tagはowner gateのまま。
+
+## Key files / next steps
+
+- `scripts/merge_section.py`
 - `scripts/test_merge_section.py`
 - `README.md`
+- `SECURITY.md`
+- `SKILL.md`
+- `docs/SKILL.ja.md`
 - `CHANGELOG.md`
-- `HANDOFF.md`
 
-## Next steps
-
-1. 新しいissue、CI failure、依存更新、明示的な要求が届くまで本repoは待機状態。
-2. 将来の変更でもproduction fingerprintとfail-closed guardを緩和しない。
-3. 待機中は別projectの安全な開発ループへ進む。
+1. final docs差分のreadiness・actual scan・Gitleaks worktreeを再確認する。
+2. commit → push → PR → 3 OS CI → merge → post-main再検証・cleanupを行う。

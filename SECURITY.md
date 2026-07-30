@@ -47,6 +47,15 @@ Use GitHub private vulnerability reporting for:
   rechecks identity immediately before path-based unlink, but a portable
   conditional-unlink primitive is unavailable, so a final name-swap race
   remains and private unpredictable names are part of the mitigation.
+  Raw target snapshots are limited to 8 MiB and raw block snapshots to 2 MiB,
+  including BOM and line-ending bytes. Reads request only `limit + 1`, exact
+  limits succeed, and stable over-limit input returns a fixed path-free error
+  before mutation in both merge and `--check`. The target limit also applies
+  to the commit conflict reread; cross-phase appeared/disappeared/metadata
+  changes retain their more specific diagnostics. Temporary and recovery
+  verification reads use the exact expected payload length. These are I/O
+  bounds, not a strict peak-memory bound: decoding, line/state lists, output
+  construction, and CRLF normalization can amplify memory use.
 - A validation gap that allows unsafe public examples.
 
 Do not open a public issue containing tokens, credentials, private keys,

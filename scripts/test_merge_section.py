@@ -1435,11 +1435,18 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
 
     def _existing_commit(self):
         target = self.dir / "target.md"
-        temporary = self.dir / ".target.md.pending"
         original = b"# Doc\n\nold.\n"
         replacement = b"# Doc\n\nnew.\n"
         target.write_bytes(original)
-        temporary.write_bytes(replacement)
+        if os.name == "nt":
+            descriptor, temporary = merge_section._open_atomic_temporary(target)
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(replacement)
+                stream.flush()
+                os.fsync(stream.fileno())
+        else:
+            temporary = self.dir / ".target.md.pending"
+            temporary.write_bytes(replacement)
         return target, temporary, target.lstat(), original, replacement
 
     def _missing_commit(self):
@@ -1596,6 +1603,8 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                 temporary,
                 target_stat,
                 original,
+                temporary.lstat(),
+                replacement,
             )
 
         self.assertEqual(target.read_bytes(), replacement)
@@ -1605,7 +1614,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "POSIX FIFOs are not portable")
     def test_windows_commit_rejects_fifo_swap_before_private_temp_read(self):
-        target, temporary, target_stat, original, _replacement = (
+        target, temporary, target_stat, original, replacement = (
             self._existing_commit()
         )
         original_open = merge_section._open_regular_read_descriptor
@@ -1636,6 +1645,8 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                     temporary,
                     target_stat,
                     original,
+                    temporary.lstat(),
+                    replacement,
                 )
 
         self.assertFalse(caught.exception.committed)
@@ -1674,6 +1685,8 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                     temporary,
                     target_stat,
                     original,
+                    temporary.lstat(),
+                    replacement,
                 )
 
         self.assertTrue(caught.exception.committed)
@@ -1708,6 +1721,8 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                     temporary,
                     target_stat,
                     original,
+                    temporary.lstat(),
+                    replacement,
                 )
 
         self.assertTrue(caught.exception.committed)
@@ -1721,7 +1736,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
         self.assertEqual(temporary.read_bytes(), replacement)
 
     def test_windows_error_1176_cleans_owned_unmoved_artifacts(self):
-        target, temporary, target_stat, original, _replacement = (
+        target, temporary, target_stat, original, replacement = (
             self._existing_commit()
         )
         with mock.patch.object(
@@ -1735,6 +1750,8 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                     temporary,
                     target_stat,
                     original,
+                    temporary.lstat(),
+                    replacement,
                 )
 
         self.assertEqual(caught.exception.errno, 1176)
@@ -1753,10 +1770,20 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                 case_dir = self.dir / name
                 case_dir.mkdir()
                 target = case_dir / "target.md"
-                temporary = case_dir / ".target.md.pending"
                 original = b"# Doc\n\nold.\n"
+                replacement = b"# Doc\n\nnew.\n"
                 target.write_bytes(original)
-                temporary.write_bytes(b"# Doc\n\nnew.\n")
+                if os.name == "nt":
+                    descriptor, temporary = (
+                        merge_section._open_atomic_temporary(target)
+                    )
+                    with os.fdopen(descriptor, "wb") as stream:
+                        stream.write(replacement)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                else:
+                    temporary = case_dir / ".target.md.pending"
+                    temporary.write_bytes(replacement)
 
                 patch_arguments = (
                     {"side_effect": result}
@@ -1774,6 +1801,8 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                             temporary,
                             target.lstat(),
                             original,
+                            temporary.lstat(),
+                            replacement,
                         )
 
                 self.assertEqual(target.read_bytes(), original)
@@ -1807,6 +1836,8 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                     temporary,
                     target_stat,
                     original,
+                    temporary.lstat(),
+                    replacement,
                 )
 
         self.assertIsNone(caught.exception.committed)
@@ -1842,6 +1873,8 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                     temporary,
                     target_stat,
                     original,
+                    temporary.lstat(),
+                    replacement,
                 )
 
         self.assertTrue(caught.exception.committed)
@@ -1876,6 +1909,8 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                     temporary,
                     target_stat,
                     original,
+                    temporary.lstat(),
+                    replacement,
                 )
 
         self.assertIsNone(caught.exception.committed)
@@ -1888,7 +1923,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
         self.assertEqual(temporary.read_bytes(), replacement)
 
     def test_windows_error_1177_restores_without_replacement(self):
-        target, temporary, target_stat, original, _replacement = (
+        target, temporary, target_stat, original, replacement = (
             self._existing_commit()
         )
         captured = {}
@@ -1923,6 +1958,8 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                     temporary,
                     target_stat,
                     original,
+                    temporary.lstat(),
+                    replacement,
                 )
 
         self.assertEqual(caught.exception.errno, 1177)
@@ -1932,7 +1969,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
         self.assertEqual(self._files(), {"target.md"})
 
     def test_windows_error_1177_restore_interrupt_is_reconciled(self):
-        target, temporary, target_stat, original, _replacement = (
+        target, temporary, target_stat, original, replacement = (
             self._existing_commit()
         )
         captured = {}
@@ -1964,6 +2001,8 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                     temporary,
                     target_stat,
                     original,
+                    temporary.lstat(),
+                    replacement,
                 )
 
         self.assertFalse(caught.exception.committed)
@@ -2000,6 +2039,8 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                     temporary,
                     target_stat,
                     original,
+                    temporary.lstat(),
+                    replacement,
                 )
 
         self.assertFalse(caught.exception.committed)
@@ -2013,7 +2054,7 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
         self.assertEqual(temporary.read_bytes(), replacement)
 
     def test_windows_error_1177_target_inspection_failure_is_structured(self):
-        target, temporary, target_stat, original, _replacement = (
+        target, temporary, target_stat, original, replacement = (
             self._existing_commit()
         )
         captured = {}
@@ -2049,6 +2090,8 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                     temporary,
                     target_stat,
                     original,
+                    temporary.lstat(),
+                    replacement,
                 )
 
         self.assertIsNone(caught.exception.committed)
@@ -2103,6 +2146,8 @@ class WindowsCommitRecoveryTests(unittest.TestCase):
                     temporary,
                     target_stat,
                     original,
+                    temporary.lstat(),
+                    replacement,
                 )
 
         self.assertFalse(caught.exception.committed)
@@ -2681,7 +2726,9 @@ class FileLevelTests(unittest.TestCase):
         target = self._write("target.md", b"# Doc\n\n## Notes\n\nold.\n")
         replacement = b"# Doc\n\n## Notes\n\nnew.\n"
         target_stat, original = merge_section._read_regular_file_snapshot(
-            target
+            target,
+            max_bytes=merge_section._MAX_TARGET_BYTES,
+            oversize_error=merge_section._TARGET_OVERSIZE_ERROR,
         )
         original_open = merge_section._open_atomic_temporary
         captured = {}
@@ -2980,6 +3027,244 @@ class FileLevelTests(unittest.TestCase):
         self.assertEqual(captured["temporary"].read_bytes(), b"foreign object")
         self.assertIn(b"new.", captured["owned_artifact"].read_bytes())
         self.assertEqual(target.read_bytes(), b"# Doc\n\n## Notes\n\nold.\n")
+
+    def test_input_and_commit_snapshot_reads_are_bounded_at_exact_limits(self):
+        original = b"# Doc\n\n## Notes\n\nold.\n"
+        block_bytes = b"## Notes\n\nnew.\n"
+        target = self._write("target.md", original)
+        block = self._write("section.md", block_bytes)
+        original_fdopen = os.fdopen
+        read_sizes = []
+
+        class TrackingReadStream:
+            """Proxy regular reads so every requested byte count stays visible."""
+
+            def __init__(self, stream):
+                self._stream = stream
+
+            def read(self, size=-1):
+                read_sizes.append(size)
+                return self._stream.read(size)
+
+            def fileno(self):
+                return self._stream.fileno()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc_info):
+                self._stream.close()
+                return False
+
+        def tracking_fdopen(descriptor, mode, *args, **kwargs):
+            stream = original_fdopen(descriptor, mode, *args, **kwargs)
+            if mode == "rb":
+                return TrackingReadStream(stream)
+            return stream
+
+        # target初回、block初回、commit直前target再読をexact-limitで通し、
+        # いずれもlimit+1以外の無制限readへ退行していないことを測る。
+        with (
+            mock.patch.object(
+                merge_section,
+                "_MAX_TARGET_BYTES",
+                len(original),
+            ),
+            mock.patch.object(
+                merge_section,
+                "_MAX_BLOCK_BYTES",
+                len(block_bytes),
+            ),
+            mock.patch.object(os, "fdopen", side_effect=tracking_fdopen),
+        ):
+            changed, action = merge_section.merge_file(target, block)
+
+        self.assertTrue(changed)
+        self.assertEqual(action, "replaced")
+        self.assertEqual(
+            read_sizes[:3],
+            [
+                len(original) + 1,
+                len(block_bytes) + 1,
+                len(original) + 1,
+            ],
+        )
+        self.assertTrue(read_sizes)
+        self.assertNotIn(-1, read_sizes)
+        self.assertIn(b"new.", target.read_bytes())
+
+    def test_replacement_snapshot_uses_exact_expected_byte_bound(self):
+        target = self.dir / "target.md"
+        replacement = b"# Doc\n\n## Notes\n\nnew.\n"
+        descriptor, temporary = merge_section._open_atomic_temporary(target)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(replacement)
+            stream.flush()
+            os.fsync(stream.fileno())
+        expected_stat = temporary.lstat()
+        original_snapshot = merge_section._read_regular_file_snapshot
+
+        with mock.patch.object(
+            merge_section,
+            "_read_regular_file_snapshot",
+            wraps=original_snapshot,
+        ) as snapshot:
+            current = merge_section._verified_replacement_snapshot(
+                temporary,
+                expected_stat,
+                replacement,
+            )
+
+        self.assertTrue(
+            merge_section._same_file_identity(current, expected_stat)
+        )
+        self.assertEqual(snapshot.call_count, 1)
+        self.assertEqual(snapshot.call_args.kwargs["max_bytes"], len(replacement))
+        self.assertEqual(
+            snapshot.call_args.kwargs["oversize_error"],
+            "replacement temporary changed before commit",
+        )
+
+        # expected lengthを1 byte超えた同一objectは、全量を読む前に固定診断へ
+        # fail closedし、temporaryのbytes自体は変更しない。
+        with temporary.open("ab") as stream:
+            stream.write(b"x")
+        oversized = replacement + b"x"
+        with self.assertRaisesRegex(
+            merge_section.MergeError,
+            "^replacement temporary changed before commit$",
+        ):
+            merge_section._verified_replacement_snapshot(
+                temporary,
+                expected_stat,
+                replacement,
+            )
+        self.assertEqual(temporary.read_bytes(), oversized)
+
+    def test_cli_rejects_oversized_target_without_writing_or_path_reflection(self):
+        marker = "非公開ターゲット標識"
+        original = ("# Doc\n\n## Notes\n\n%s\n" % marker).encode("utf-8")
+        block_bytes = b"## Notes\n\nnew.\n"
+        target = self._write("%s.md" % marker, original)
+        block = self._write("section.md", block_bytes)
+
+        for check_args in ((), ("--check",)):
+            with self.subTest(check=bool(check_args)):
+                stderr = io.StringIO()
+                stdout = io.StringIO()
+                with (
+                    mock.patch.object(
+                        merge_section,
+                        "_MAX_TARGET_BYTES",
+                        len(original) - 1,
+                    ),
+                    mock.patch.object(
+                        merge_section,
+                        "_open_atomic_temporary",
+                    ) as temporary_open,
+                    mock.patch.object(sys, "stderr", stderr),
+                    mock.patch.object(sys, "stdout", stdout),
+                ):
+                    result = merge_section.main(
+                        [str(target), str(block), *check_args]
+                    )
+
+                self.assertEqual(result, 2)
+                self.assertEqual(stdout.getvalue(), "")
+                self.assertEqual(
+                    stderr.getvalue(),
+                    "error: target exceeds the supported byte limit\n",
+                )
+                self.assertNotIn(marker, stderr.getvalue())
+                self.assertNotIn(block.name, stderr.getvalue())
+                temporary_open.assert_not_called()
+                self.assertEqual(target.read_bytes(), original)
+                self.assertEqual(block.read_bytes(), block_bytes)
+                self.assertEqual(
+                    sorted(path.name for path in self.dir.iterdir()),
+                    sorted((block.name, target.name)),
+                )
+
+    def test_cli_rejects_oversized_block_without_writing_or_path_reflection(self):
+        marker = "非公開ブロック標識"
+        original = b"# Doc\n\n## Notes\n\nold.\n"
+        block_bytes = ("## Notes\n\n%s\n" % marker).encode("utf-8")
+        target = self._write("target.md", original)
+        block = self._write("%s.md" % marker, block_bytes)
+
+        for check_args in ((), ("--check",)):
+            with self.subTest(check=bool(check_args)):
+                stderr = io.StringIO()
+                stdout = io.StringIO()
+                with (
+                    mock.patch.object(
+                        merge_section,
+                        "_MAX_BLOCK_BYTES",
+                        len(block_bytes) - 1,
+                    ),
+                    mock.patch.object(
+                        merge_section,
+                        "_open_atomic_temporary",
+                    ) as temporary_open,
+                    mock.patch.object(sys, "stderr", stderr),
+                    mock.patch.object(sys, "stdout", stdout),
+                ):
+                    result = merge_section.main(
+                        [str(target), str(block), *check_args]
+                    )
+
+                self.assertEqual(result, 2)
+                self.assertEqual(stdout.getvalue(), "")
+                self.assertEqual(
+                    stderr.getvalue(),
+                    "error: block exceeds the supported byte limit\n",
+                )
+                self.assertNotIn(marker, stderr.getvalue())
+                self.assertNotIn(target.name, stderr.getvalue())
+                temporary_open.assert_not_called()
+                self.assertEqual(target.read_bytes(), original)
+                self.assertEqual(block.read_bytes(), block_bytes)
+                self.assertEqual(
+                    sorted(path.name for path in self.dir.iterdir()),
+                    sorted((block.name, target.name)),
+                )
+
+    def test_commit_growth_is_metadata_change_and_cleans_temporary(self):
+        original = b"# Doc\n\n## Notes\n\nold.\n"
+        target = self._write("target.md", original)
+        block = self._write("section.md", b"## Notes\n\nnew.\n")
+        original_open = merge_section._open_atomic_temporary
+
+        def open_then_grow_target(target_path):
+            result = original_open(target_path)
+            # 初回snapshot後にexact-limitからlimit+1へ外部成長させる。
+            # byte超過よりbaseline metadata driftを優先し、外部bytesを守る。
+            target.write_bytes(original + b"x")
+            return result
+
+        with (
+            mock.patch.object(
+                merge_section,
+                "_MAX_TARGET_BYTES",
+                len(original),
+            ),
+            mock.patch.object(
+                merge_section,
+                "_open_atomic_temporary",
+                side_effect=open_then_grow_target,
+            ),
+        ):
+            with self.assertRaisesRegex(
+                merge_section.MergeError,
+                "^target metadata changed during merge$",
+            ):
+                merge_section.merge_file(target, block)
+
+        self.assertEqual(target.read_bytes(), original + b"x")
+        self.assertEqual(
+            sorted(path.name for path in self.dir.iterdir()),
+            ["section.md", "target.md"],
+        )
 
     def test_crlf_and_bom_are_preserved_and_stable(self):
         fixture = "replace-existing-section"
@@ -3764,14 +4049,39 @@ class FileLevelTests(unittest.TestCase):
         except (NotImplementedError, OSError):
             self.skipTest("symbolic links are unavailable on this host")
 
-        with self.assertRaisesRegex(merge_section.MergeError, "symbolic link"):
-            merge_section.merge_file(target, block)
+        # referentは0-byte上限を超えるが、no-follow/type診断をsizeより優先する。
+        with mock.patch.object(merge_section, "_MAX_TARGET_BYTES", 0):
+            with self.assertRaisesRegex(
+                merge_section.MergeError,
+                "symbolic link|reparse point",
+            ):
+                merge_section.merge_file(target, block)
 
         self.assertTrue(target.is_symlink())
         self.assertEqual(
             referent.read_bytes(),
             b"# Doc\n\n## Notes\n\nold.\n",
         )
+
+    def test_symbolic_link_block_is_rejected_before_byte_limit_read(self):
+        target = self._write("target.md", b"# Doc\n")
+        referent = self._write("referent.md", b"## Notes\n\nnew.\n")
+        block = self.dir / "section.md"
+        try:
+            block.symlink_to(referent)
+        except (NotImplementedError, OSError):
+            self.skipTest("symbolic links are unavailable on this host")
+
+        with mock.patch.object(merge_section, "_MAX_BLOCK_BYTES", 0):
+            with self.assertRaisesRegex(
+                merge_section.MergeError,
+                "symbolic link|reparse point",
+            ):
+                merge_section.merge_file(target, block)
+
+        self.assertEqual(target.read_bytes(), b"# Doc\n")
+        self.assertTrue(block.is_symlink())
+        self.assertEqual(referent.read_bytes(), b"## Notes\n\nnew.\n")
 
     @unittest.skipIf(os.name == "nt", "POSIX FIFOs are not portable")
     def test_fifo_target_is_rejected_before_read(self):

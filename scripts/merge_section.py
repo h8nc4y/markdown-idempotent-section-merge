@@ -31,7 +31,9 @@ Reference implementation for the markdown-idempotent-section-merge skill:
   the action is reported as ``normalized``, not hidden.
 - Changed content is flushed to a private same-directory temporary file and
   installed with one atomic replace. Target and block are read without
-  following links; non-regular and multi-hard-link inputs are refused.
+  following links; non-regular and multi-hard-link inputs are refused. Raw
+  target input is capped at 8 MiB and raw block input at 2 MiB, including BOM
+  and line endings; the target cap is enforced again at the pre-commit reread.
   Windows uses documented ``ReplaceFileW`` DACL/attribute/stream behavior;
   POSIX preserves owner/group, mode, and bounded extended attributes.
   The target identity, metadata, and bytes are rechecked immediately before
@@ -244,10 +246,20 @@ _BLANK_RE = re.compile(r"^[ \t]*$")
 _BOM = b"\xef\xbb\xbf"
 _MAX_XATTR_COUNT = 256
 _MAX_XATTR_BYTES = 1024 * 1024
+# Markdown入力を一括decode・line scanする実装なので、raw byte段階で
+# 上限を固定する。blockは1節だけを想定し、targetとは独立して狭く保つ。
+_MAX_TARGET_BYTES = 8 * 1024 * 1024
+_MAX_BLOCK_BYTES = 2 * 1024 * 1024
+_TARGET_OVERSIZE_ERROR = "target exceeds the supported byte limit"
+_BLOCK_OVERSIZE_ERROR = "block exceeds the supported byte limit"
 
 
 class MergeError(ValueError):
     """Raised when the block or the target violates a merge invariant."""
+
+
+class _SnapshotByteLimitError(MergeError):
+    """Identify a stable snapshot that crossed its caller-owned byte budget."""
 
 
 class AtomicCommitError(MergeError):
@@ -1555,6 +1567,9 @@ def _assert_windows_owner_only_dacl(descriptor, target):
 
 def _read_regular_file_snapshot(
     target,
+    *,
+    max_bytes,
+    oversize_error,
     missing_ok=False,
     allow_multiple_links=False,
     require_effective_owner=True,
@@ -1600,7 +1615,9 @@ def _read_regular_file_snapshot(
 
         with os.fdopen(descriptor, "rb") as stream:
             descriptor = None
-            raw = stream.read()
+            # limit+1だけを読み、exact-limitと超過を曖昧にしない。診断は
+            # pathを含まない固定文にし、入力名やprivate directoryを反射しない。
+            raw = stream.read(max_bytes + 1)
             after = os.fstat(stream.fileno())
             path_after = _inspect_target(
                 target,
@@ -1613,6 +1630,10 @@ def _read_regular_file_snapshot(
                 or not _same_file_identity(path_after, after)
             ):
                 raise MergeError("target path changed while being read")
+            # identity/version検証を先に完了し、swapやmutationを単なる
+            # size errorへ誤分類しない。stable objectだけをbyte budget判定する。
+            if len(raw) > max_bytes:
+                raise _SnapshotByteLimitError(oversize_error)
         return after, raw
     finally:
         if descriptor is not None:
@@ -1622,21 +1643,42 @@ def _read_regular_file_snapshot(
 def _assert_target_unchanged(target, target_stat, original_bytes):
     """Fail before commit when another writer changed TARGET."""
 
-    current_before, current_bytes = _read_regular_file_snapshot(
-        target,
-        missing_ok=True,
-    )
+    # baselineとのstate差をbudget判定より先に分類する。前段とsnapshotの間に
+    # raceが残るため、超過例外もbaseline stateへ畳み込み、二重に守る。
+    path_before = _inspect_target(target)
+    if target_stat is None:
+        if path_before is not None:
+            raise MergeError("target appeared during merge; refusing to overwrite it")
+    else:
+        if path_before is None:
+            raise MergeError("target disappeared during merge")
+        if _stat_fingerprint(path_before) != _stat_fingerprint(target_stat):
+            raise MergeError("target metadata changed during merge")
+
+    try:
+        current_before, current_bytes = _read_regular_file_snapshot(
+            target,
+            max_bytes=_MAX_TARGET_BYTES,
+            oversize_error=_TARGET_OVERSIZE_ERROR,
+            missing_ok=True,
+        )
+    except _SnapshotByteLimitError as error:
+        if target_stat is None:
+            raise MergeError(
+                "target appeared during merge; refusing to overwrite it"
+            ) from error
+        raise MergeError("target metadata changed during merge") from error
+
     if target_stat is None:
         if current_before is not None:
             raise MergeError("target appeared during merge; refusing to overwrite it")
-        return
-    if current_before is None:
-        raise MergeError("target disappeared during merge")
-    if _stat_fingerprint(current_before) != _stat_fingerprint(target_stat):
-        raise MergeError("target metadata changed during merge")
-
-    if current_bytes != original_bytes:
-        raise MergeError("target content changed during merge")
+    else:
+        if current_before is None:
+            raise MergeError("target disappeared during merge")
+        if _stat_fingerprint(current_before) != _stat_fingerprint(target_stat):
+            raise MergeError("target metadata changed during merge")
+        if current_bytes != original_bytes:
+            raise MergeError("target content changed during merge")
 
 
 def _move_file_windows_no_replace_raw(source, destination):
@@ -1669,7 +1711,11 @@ def _verified_replacement_snapshot(
 ):
     """Verify that the commit path still names the file this call wrote."""
 
-    current_stat, current_bytes = _read_regular_file_snapshot(temporary)
+    current_stat, current_bytes = _read_regular_file_snapshot(
+        temporary,
+        max_bytes=len(expected_bytes),
+        oversize_error="replacement temporary changed before commit",
+    )
     if (
         current_stat is None
         or _stat_fingerprint(current_stat) != _stat_fingerprint(expected_stat)
@@ -1910,6 +1956,8 @@ def _path_matches_expected(
     try:
         current, current_bytes = _read_regular_file_snapshot(
             path,
+            max_bytes=len(expected_bytes),
+            oversize_error="candidate content exceeds the expected byte length",
             missing_ok=True,
             allow_multiple_links=allow_multiple_links,
         )
@@ -2017,32 +2065,21 @@ def _commit_existing_windows(
     temporary,
     target_stat,
     original_bytes,
-    expected_replacement_stat=None,
-    expected_replacement_bytes=None,
+    expected_replacement_stat,
+    expected_replacement_bytes,
 ):
     """Own TEMPORARY and recover every documented ReplaceFileW partial state."""
 
     try:
-        if (
-            expected_replacement_stat is not None
-            and expected_replacement_bytes is not None
-        ):
-            temporary_stat = _verified_replacement_snapshot(
-                temporary,
-                expected_replacement_stat,
-                expected_replacement_bytes,
-            )
-            replacement_bytes = expected_replacement_bytes
-        else:
-            # State-machine unit fixtures call this helper directly on all
-            # platforms. Production always supplies the creation fingerprint.
-            temporary_stat, replacement_bytes = _read_regular_file_snapshot(
-                temporary,
-            )
-            if temporary_stat is None:
-                raise MergeError(
-                    "Windows replacement temporary disappeared"
-                )
+        # Callers must carry the handle-derived fingerprint and exact bytes
+        # across the ownership boundary; no unfingerprinted fallback read is
+        # allowed. The verifier therefore reads at most expected length + 1.
+        temporary_stat = _verified_replacement_snapshot(
+            temporary,
+            expected_replacement_stat,
+            expected_replacement_bytes,
+        )
+        replacement_bytes = expected_replacement_bytes
     except BaseException as temporary_error:
         raise _windows_commit_state_error(
             "Windows replacement temporary could not be verified before commit",
@@ -2572,7 +2609,12 @@ def merge_file(target, block, write=True):
     rather than compare-and-swap; serialize writers externally for strict
     lost-update prevention.
     """
-    target_stat, raw = _read_regular_file_snapshot(target, missing_ok=True)
+    target_stat, raw = _read_regular_file_snapshot(
+        target,
+        max_bytes=_MAX_TARGET_BYTES,
+        oversize_error=_TARGET_OVERSIZE_ERROR,
+        missing_ok=True,
+    )
     has_bom = raw.startswith(_BOM)
     text = _decode(raw, "target")
     eol = "\r\n" if "\r\n" in text else "\n"
@@ -2580,6 +2622,8 @@ def merge_file(target, block, write=True):
 
     _block_stat, block_bytes = _read_regular_file_snapshot(
         block,
+        max_bytes=_MAX_BLOCK_BYTES,
+        oversize_error=_BLOCK_OVERSIZE_ERROR,
         require_effective_owner=False,
         reject_encrypted=False,
     )

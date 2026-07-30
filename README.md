@@ -179,6 +179,16 @@ targets, non-regular files, and multi-hard-link files are refused because
 reading or replacing them would silently change their semantics or expose a
 plaintext temporary.
 
+Input snapshots count raw bytes, including a UTF-8 BOM and LF/CRLF bytes.
+`TARGET.md` may be at most 8 MiB (8,388,608 bytes), and `SECTION.md` may be at
+most 2 MiB (2,097,152 bytes); an exact-limit file is accepted. Each descriptor
+read requests at most its limit plus one byte so an over-limit input fails
+closed with exit code 2 and a fixed, path-free diagnostic before any write.
+The 8 MiB target budget is applied again during the pre-commit conflict
+recheck. Replacement and recovery snapshots use the already-known expected
+payload length rather than an unbounded read. The same no-write rejection
+applies to normal merge and `--check`.
+
 A document-leading exact YAML frontmatter block (`---` through exact `---` or
 `...`) or TOML block (`+++` through exact `+++`) is excluded from heading and
 fence scans. Heading-looking metadata comments therefore cannot become
@@ -362,6 +372,11 @@ frontmatter・fence・CommonMark HTML type 1〜7 を排他的に走査します�
 - UTF-8 with LF or CRLF only; CR-only endings are refused, and files mixing
   CRLF and LF are normalized to CRLF on the first write (reported as
   `normalized`).
+- Raw target input is limited to 8 MiB and raw canonical-block input to 2 MiB,
+  including BOM and line-ending bytes. These I/O limits bound each snapshot
+  read, not Python peak memory: UTF-8 decoding, line/state lists, merge output,
+  and CRLF normalization can use more memory than the raw inputs. A separate
+  line-count budget and a streaming parser remain out of scope.
 - The reference implementation accepts a missing target or an existing
   ordinary file with one hard link. Symbolic links and multi-hard-link files
   are refused; choose the intended ordinary file path explicitly.

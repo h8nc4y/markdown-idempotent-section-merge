@@ -272,6 +272,13 @@ Both target and canonical block are read as no-follow ordinary-file snapshots.
 Symbolic-link, non-regular, and multi-hard-link inputs are refused because
 replacement would change their semantics; Windows reparse points and
 EFS-encrypted Windows targets are refused before content is read.
+Raw input counts the UTF-8 BOM and line-ending bytes: the target limit is
+8 MiB (8,388,608 bytes), and the canonical-block limit is 2 MiB
+(2,097,152 bytes). Exact-limit input succeeds. A stable over-limit input makes
+both merge and `--check` exit 2 with a fixed path-free diagnostic before any
+write. The target is read under the same limit again during the pre-commit
+conflict check; temporary and recovery verification use the exact expected
+payload length.
 The target identity, metadata, and bytes are rechecked just before commit.
 Changes completed before that check are detected, but the check and replacement
 are separate operations; externally serialize every writer when an existing
@@ -371,6 +378,10 @@ the scanner back into the trap, these tests fail first.
   endings are refused — they would break byte idempotency. A file mixing
   CRLF and LF is treated as CRLF (any CRLF present selects CRLF), rewritten
   once as `normalized`, and stable from the second run on.
+- The 8 MiB target and 2 MiB canonical-block limits bound raw snapshot I/O,
+  not Python peak memory. Decoding, line/state lists, merged output, and CRLF
+  normalization can use more memory; this reference has no separate line-count
+  budget or streaming parser.
 - The target must be missing or an ordinary file with one hard link.
   Symbolic-link and multi-hard-link targets are refused; choose the intended
   ordinary file path explicitly.
