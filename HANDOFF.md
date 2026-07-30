@@ -2,15 +2,14 @@
 
 ## Current state
 
-INPUT-BUDGET-01（Class M）はPR #24で`main`へ統合済み
-（merge commit `d263c58`）。統合後CIはUbuntu / macOS 15がPASSし、
-Windowsがpath `lstat`とhandle `fstat`のtimestamp精度差、および
-Windows fixtureのexpected stat取得元の不一致でFAILした。
+完了: INPUT-BUDGET-01（Class M）はPR #24（merge commit `d263c58`）で
+`main`へ統合した。統合後のWindows CIで検出したpath `lstat` / handle
+`fstat`間のtimestamp精度差とfixture provenance不一致は、follow-up PR #25
+（merge commit `6df6872`）で修正した。
 
-現在はfollow-up branch `fix/windows-byte-budget-ci`で、preliminary path guardを
-identity-only、最終descriptor fingerprintをstrictのままにし、Windows fixtureを
-production同様のhandle由来statへ修正済み。local full suiteまでPASSしている。
-follow-upのcommit、push、PR、3 OS CI、`main`統合は未確認。
+PR #25のexact head `8772b44`はUbuntu / Windows / macOS 15 CIが全PASS。
+`main`を`6df6872`へfast-forwardしたpost-main再検証もPASSしている。
+INPUT-BUDGET-01の実装・follow-up用worktreeとlocal / remote branchはcleanup済み。
 
 ## Objective / impact
 
@@ -62,6 +61,11 @@ follow-upのcommit、push、PR、3 OS CI、`main`統合は未確認。
 - follow-up変更4ファイル: strict UTF-8、LF、BOM/NULなし。compileall、
   CLI help、`git diff --check`: PASS。
 - Windows follow-up独立review: P0〜P3 CLEAR。
+- PR #25 exact head `8772b44`: Ubuntu / Windows / macOS 15 CIが全PASS。
+- merge commit `6df6872` post-main: full suite 160 tests、
+  `OK (skipped=15)`。PowerShell 7 / Windows PowerShell 5.1 readiness・
+  actual private-marker scan、Gitleaks worktree、compileall、CLI help、
+  `git diff --check`: PASS。
 
 ## Decisions / residual risks
 
@@ -70,8 +74,7 @@ follow-upのcommit、push、PR、3 OS CI、`main`統合は未確認。
 - byte budgetはpeak-memory保証ではない。decode、line/state list、merge output、
   CRLF正規化で増幅する。line-count budget / streaming parserは後続候補。
 - commit再確認とreplaceはCASではなく、既存の最終lost-update windowは残る。
-- follow-up fixのUbuntu / Windows / macOS 15 CIは未確認。Release / tagはowner
-  gateのまま。
+- Release / tagはowner gateのまま。
 
 ## Key files / next steps
 
@@ -83,7 +86,5 @@ follow-upのcommit、push、PR、3 OS CI、`main`統合は未確認。
 - `docs/SKILL.ja.md`
 - `CHANGELOG.md`
 
-1. follow-upをcommit → push → PRの順で進め、Ubuntu / Windows / macOS 15の
-   全CI PASSを
-   確認してからmergeする。
-2. post-main再検証・正本closeout・worktree / branch cleanupを行う。
+1. 次候補はline-count budget、またはstreaming parserの設計。着手前に
+   peak-memory増幅をfixtureで計測し、互換性境界を決める。
