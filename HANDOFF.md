@@ -2,8 +2,13 @@
 
 ## Current state
 
-進行中: OUTPUT-CLOSURE-01（Class M）。final raw outputをtarget inputと同じ
-8 MiBへ閉じる実装・local gate・独立reviewは完了。PR / 3 OS CI待ち。
+完了: OUTPUT-CLOSURE-01（Class M）はPR #27（merge commit `fc18bf4`）で
+`main`へ統合した。final raw outputをtarget inputと同じ8 MiBへ閉じ、ツール自身が
+次回拒否するtargetを生成できないようにした。
+
+PR #27のexact head `99d58cc`とmerge後`main`の`fc18bf4`は、いずれも
+Ubuntu / Windows / macOS 15 CIが全PASS。実装用worktreeとlocal / remote branchは
+cleanup済み。
 
 完了: INPUT-BUDGET-01（Class M）はPR #24（merge commit `d263c58`）で
 `main`へ統合した。統合後のWindows CIで検出したpath `lstat` / handle
@@ -59,6 +64,10 @@ INPUT-BUDGET-01の実装・follow-up用worktreeとlocal / remote branchはcleanu
   UTF-8 BOMを保持。compileall、CLI help、`git diff --check`: PASS。
 - 独立source review / tests-docs review: mixed-EOL testとSECURITY readiness固定を
   追加後、P0〜P3 CLEAR。
+- PR #27 exact head `99d58cc` / run `30669329818`: Ubuntu 2m6s、
+  Windows 5m8s、macOS 15 6m58s、すべてPASS。
+- merge commit `fc18bf4` / post-main run `30669746907`: Ubuntu 2m2s、
+  Windows 4m26s、macOS 15 6m9s、すべてPASS。
 - 変更前baseline: 153 tests、`OK (skipped=14)`。
 - RED: 新規4 testsが定数不存在で4 errorになることを確認。
 - focused input/temporary/symlink: 7 tests、`OK (skipped=2)`。
@@ -109,6 +118,5 @@ INPUT-BUDGET-01の実装・follow-up用worktreeとlocal / remote branchはcleanu
 - `docs/SKILL.ja.md`
 - `CHANGELOG.md`
 
-1. OUTPUT-CLOSURE-01をcommit / pushし、PR / 3 OS CI / merge / post-main確認を
-   完了する。その後にpeak-memory fixtureを実測し、line-count budgetまたは
-   streaming parserの互換性境界を決める。
+1. 次の安全な候補はpeak-memory fixtureの実測。結果を基にline-count budgetまたは
+   streaming parserの互換性境界を決める。Release / tagはowner gateのまま触れない。
