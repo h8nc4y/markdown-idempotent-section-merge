@@ -189,6 +189,14 @@ recheck. Replacement and recovery snapshots use the already-known expected
 payload length rather than an unbounded read. The same no-write rejection
 applies to normal merge and `--check`.
 
+The final merged raw output is independently limited to the same 8 MiB after
+the UTF-8 BOM and selected LF/CRLF endings are restored. An exact-limit output
+is written and remains a byte-identical no-op on the next run. A limit-plus-one
+append, replacement, or normalization fails with exit code 2 and a fixed,
+path-free diagnostic before a temporary file is created, in both normal merge
+and `--check`. This closure prevents the tool from producing a target that its
+next invocation must reject as oversized.
+
 A document-leading exact YAML frontmatter block (`---` through exact `---` or
 `...`) or TOML block (`+++` through exact `+++`) is excluded from heading and
 fence scans. Heading-looking metadata comments therefore cannot become
@@ -372,9 +380,10 @@ frontmatter・fence・CommonMark HTML type 1〜7 を排他的に走査します�
 - UTF-8 with LF or CRLF only; CR-only endings are refused, and files mixing
   CRLF and LF are normalized to CRLF on the first write (reported as
   `normalized`).
-- Raw target input is limited to 8 MiB and raw canonical-block input to 2 MiB,
-  including BOM and line-ending bytes. These I/O limits bound each snapshot
-  read, not Python peak memory: UTF-8 decoding, line/state lists, merge output,
+- Raw target input and final merged output are limited to 8 MiB; raw
+  canonical-block input is limited to 2 MiB. All limits include BOM and
+  line-ending bytes. These limits bound snapshot I/O and persisted output, not
+  Python peak memory: UTF-8 decoding, line/state lists, output construction,
   and CRLF normalization can use more memory than the raw inputs. A separate
   line-count budget and a streaming parser remain out of scope.
 - The reference implementation accepts a missing target or an existing

@@ -3039,6 +3039,197 @@ class FileLevelTests(unittest.TestCase):
         self.assertIn(b"new.", captured["owned_artifact"].read_bytes())
         self.assertEqual(target.read_bytes(), b"# Doc\n\n## Notes\n\nold.\n")
 
+    def test_final_output_exact_limit_is_written_and_idempotent(self):
+        block_bytes = b"## Notes\n\nnew.\n"
+        block = self._write("section.md", block_bytes)
+        output_limit = merge_section._MAX_OUTPUT_BYTES
+
+        # 既存末尾newlineとblockの間へ入る1 byte separatorまで逆算し、
+        # final raw outputをproductionの8 MiB境界へexactに合わせる。
+        target_length = output_limit - 1 - len(block_bytes)
+        prefix = b"# Doc\n\n"
+        original = prefix + (b"x" * (target_length - len(prefix) - 1)) + b"\n"
+        self.assertEqual(len(original) + 1 + len(block_bytes), output_limit)
+        target = self._write("target.md", original)
+
+        changed, action = merge_section.merge_file(target, block)
+
+        self.assertTrue(changed)
+        self.assertEqual(action, "appended")
+        exact_output = target.read_bytes()
+        self.assertEqual(len(exact_output), output_limit)
+        self.assertTrue(exact_output.endswith(b"\n\n" + block_bytes))
+
+        # 自身が生成したexact-limit targetは次回inputとして受理でき、
+        # byte-identicalなno-opにならなければclosure/idempotence違反となる。
+        with mock.patch.object(merge_section, "_atomic_write") as atomic_write:
+            changed_again, action_again = merge_section.merge_file(target, block)
+        self.assertFalse(changed_again)
+        self.assertEqual(action_again, "unchanged")
+        atomic_write.assert_not_called()
+        self.assertEqual(target.read_bytes(), exact_output)
+
+    def test_cli_rejects_append_output_limit_plus_one_without_writing(self):
+        marker = "非公開出力標識"
+        original = b"# Doc\n"
+        block_bytes = b"## Notes\n\nnew.\n"
+        target = self._write("%s.md" % marker, original)
+        block = self._write("section.md", block_bytes)
+        expected_length = len(original) + 1 + len(block_bytes)
+
+        for check_args in ((), ("--check",)):
+            with self.subTest(check=bool(check_args)):
+                target.write_bytes(original)
+                stderr = io.StringIO()
+                stdout = io.StringIO()
+                with (
+                    mock.patch.object(
+                        merge_section,
+                        "_MAX_OUTPUT_BYTES",
+                        expected_length - 1,
+                    ),
+                    mock.patch.object(
+                        merge_section,
+                        "_open_atomic_temporary",
+                    ) as temporary_open,
+                    mock.patch.object(sys, "stderr", stderr),
+                    mock.patch.object(sys, "stdout", stdout),
+                ):
+                    result = merge_section.main(
+                        [str(target), str(block), *check_args]
+                    )
+
+                self.assertEqual(result, 2)
+                self.assertEqual(stdout.getvalue(), "")
+                self.assertEqual(
+                    stderr.getvalue(),
+                    "error: merged output exceeds the supported byte limit\n",
+                )
+                self.assertNotIn(marker, stderr.getvalue())
+                self.assertNotIn(block.name, stderr.getvalue())
+                temporary_open.assert_not_called()
+                self.assertEqual(target.read_bytes(), original)
+                self.assertEqual(block.read_bytes(), block_bytes)
+                self.assertEqual(
+                    sorted(path.name for path in self.dir.iterdir()),
+                    sorted((block.name, target.name)),
+                )
+
+    def test_bom_crlf_longer_replacement_obeys_final_output_limit(self):
+        fixture = "replace-existing-section"
+        bom = b"\xef\xbb\xbf"
+        original = bom + load(fixture, "input.md").replace(
+            "\n", "\r\n"
+        ).encode("utf-8")
+        block_bytes = load(fixture, "section.md").encode("utf-8")
+        expected = bom + load(fixture, "expected.md").replace(
+            "\n", "\r\n"
+        ).encode("utf-8")
+        self.assertGreater(len(expected), len(original))
+        target = self._write("target.md", original)
+        block = self._write("section.md", block_bytes)
+
+        # BOMとCRLF展開後のfinal raw bytesがexactならwriteと2回目no-opを許可する。
+        with mock.patch.object(
+            merge_section,
+            "_MAX_OUTPUT_BYTES",
+            len(expected),
+        ):
+            changed, action = merge_section.merge_file(target, block)
+            changed_again, action_again = merge_section.merge_file(target, block)
+        self.assertTrue(changed)
+        self.assertEqual(action, "replaced")
+        self.assertFalse(changed_again)
+        self.assertEqual(action_again, "unchanged")
+        self.assertEqual(target.read_bytes(), expected)
+
+        # 同じreplacementをfinal limit+1へ落とすと、通常/--checkの双方で
+        # temp作成前に固定診断へfail closedし、target/blockを保持する。
+        for check_args in ((), ("--check",)):
+            with self.subTest(check=bool(check_args)):
+                target.write_bytes(original)
+                stderr = io.StringIO()
+                stdout = io.StringIO()
+                with (
+                    mock.patch.object(
+                        merge_section,
+                        "_MAX_OUTPUT_BYTES",
+                        len(expected) - 1,
+                    ),
+                    mock.patch.object(
+                        merge_section,
+                        "_open_atomic_temporary",
+                    ) as temporary_open,
+                    mock.patch.object(sys, "stderr", stderr),
+                    mock.patch.object(sys, "stdout", stdout),
+                ):
+                    result = merge_section.main(
+                        [str(target), str(block), *check_args]
+                    )
+
+                self.assertEqual(result, 2)
+                self.assertEqual(stdout.getvalue(), "")
+                self.assertEqual(
+                    stderr.getvalue(),
+                    "error: merged output exceeds the supported byte limit\n",
+                )
+                temporary_open.assert_not_called()
+                self.assertEqual(target.read_bytes(), original)
+                self.assertEqual(block.read_bytes(), block_bytes)
+                self.assertEqual(
+                    sorted(path.name for path in self.dir.iterdir()),
+                    sorted((block.name, target.name)),
+                )
+
+    def test_mixed_eol_normalization_rejects_output_limit_plus_one(self):
+        marker = "非公開正規化標識"
+        original = b"# T\r\n\n## Notes\nnew.\n"
+        block_bytes = b"## Notes\nnew.\n"
+        expected = b"# T\r\n\r\n## Notes\r\nnew.\r\n"
+        target = self._write("%s.md" % marker, original)
+        block = self._write("section.md", block_bytes)
+        self.assertGreater(len(expected), len(original))
+
+        # managed sectionの内容が同じでも、mixed EOLをCRLFへ統一するとraw
+        # bytesは増える。normalizationだけのlimit+1もwrite/temp前に拒否する。
+        for check_args in ((), ("--check",)):
+            with self.subTest(check=bool(check_args)):
+                target.write_bytes(original)
+                stderr = io.StringIO()
+                stdout = io.StringIO()
+                with (
+                    mock.patch.object(
+                        merge_section,
+                        "_MAX_OUTPUT_BYTES",
+                        len(expected) - 1,
+                    ),
+                    mock.patch.object(
+                        merge_section,
+                        "_open_atomic_temporary",
+                    ) as temporary_open,
+                    mock.patch.object(sys, "stderr", stderr),
+                    mock.patch.object(sys, "stdout", stdout),
+                ):
+                    result = merge_section.main(
+                        [str(target), str(block), *check_args]
+                    )
+
+                self.assertEqual(result, 2)
+                self.assertEqual(stdout.getvalue(), "")
+                self.assertEqual(
+                    stderr.getvalue(),
+                    "error: merged output exceeds the supported byte limit\n",
+                )
+                self.assertNotIn(marker, stderr.getvalue())
+                self.assertNotIn(block.name, stderr.getvalue())
+                temporary_open.assert_not_called()
+                self.assertEqual(target.read_bytes(), original)
+                self.assertEqual(block.read_bytes(), block_bytes)
+                self.assertEqual(
+                    sorted(path.name for path in self.dir.iterdir()),
+                    sorted((block.name, target.name)),
+                )
+
     def test_input_and_commit_snapshot_reads_are_bounded_at_exact_limits(self):
         original = b"# Doc\n\n## Notes\n\nold.\n"
         block_bytes = b"## Notes\n\nnew.\n"

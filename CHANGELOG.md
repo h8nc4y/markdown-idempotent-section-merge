@@ -8,6 +8,11 @@ The format loosely follows Keep a Changelog conventions.
 
 ### Changed
 
+- Cap the final merged raw output at the target's 8 MiB input boundary after
+  BOM and LF/CRLF restoration. Accept an exact-limit reusable output, and
+  reject a limit-plus-one append, replacement, or normalization with exit 2
+  and a fixed path-free diagnostic before temporary creation in merge and
+  `--check`.
 - Bound raw no-follow reads to 8 MiB for the target and 2 MiB for the
   canonical block, including BOM and line-ending bytes. Apply the target bound
   again during the pre-commit conflict reread, require exact expected-length

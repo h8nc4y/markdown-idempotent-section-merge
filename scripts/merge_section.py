@@ -32,8 +32,9 @@ Reference implementation for the markdown-idempotent-section-merge skill:
 - Changed content is flushed to a private same-directory temporary file and
   installed with one atomic replace. Target and block are read without
   following links; non-regular and multi-hard-link inputs are refused. Raw
-  target input is capped at 8 MiB and raw block input at 2 MiB, including BOM
-  and line endings; the target cap is enforced again at the pre-commit reread.
+  target input and final raw output are capped at 8 MiB; raw block input is
+  capped at 2 MiB. Each limit includes BOM and line endings, and the target
+  input cap is enforced again at the pre-commit reread.
   Windows uses documented ``ReplaceFileW`` DACL/attribute/stream behavior;
   POSIX preserves owner/group, mode, and bounded extended attributes.
   The target identity, metadata, and bytes are rechecked immediately before
@@ -250,8 +251,12 @@ _MAX_XATTR_BYTES = 1024 * 1024
 # 上限を固定する。blockは1節だけを想定し、targetとは独立して狭く保つ。
 _MAX_TARGET_BYTES = 8 * 1024 * 1024
 _MAX_BLOCK_BYTES = 2 * 1024 * 1024
+# 自身が生成したtargetを次回も受理できるclosureを守るため、final raw outputは
+# target inputと同じ上限へ固定する。BOMとCRLF展開後のbytesを判定対象にする。
+_MAX_OUTPUT_BYTES = _MAX_TARGET_BYTES
 _TARGET_OVERSIZE_ERROR = "target exceeds the supported byte limit"
 _BLOCK_OVERSIZE_ERROR = "block exceeds the supported byte limit"
+_OUTPUT_OVERSIZE_ERROR = "merged output exceeds the supported byte limit"
 
 
 class MergeError(ValueError):
@@ -2635,6 +2640,10 @@ def merge_file(target, block, write=True):
     merged, action = merge(normalized, block_text)
     out = merged if eol == "\n" else merged.replace("\n", eol)
     out_bytes = (_BOM if has_bom else b"") + out.encode("utf-8")
+    # decode/merge後では文字数とraw byte数が一致しない。BOMと選択済みEOLを
+    # 再付与したfinal bytesだけを検査し、temp作成前に固定診断でfail closedする。
+    if len(out_bytes) > _MAX_OUTPUT_BYTES:
+        raise MergeError(_OUTPUT_OVERSIZE_ERROR)
     changed = out_bytes != raw
     if not changed:
         action = "unchanged"
