@@ -53,9 +53,13 @@ Use GitHub private vulnerability reporting for:
   before mutation in both merge and `--check`. The target limit also applies
   to the commit conflict reread; cross-phase appeared/disappeared/metadata
   changes retain their more specific diagnostics. Temporary and recovery
-  verification reads use the exact expected payload length. These are I/O
-  bounds, not a strict peak-memory bound: decoding, line/state lists, output
-  construction, and CRLF normalization can amplify memory use.
+  verification reads use the exact expected payload length. Final merged raw
+  output is separately capped at 8 MiB after BOM/EOL restoration. Exact-limit
+  output remains reusable; limit-plus-one output returns exit 2 with a fixed
+  path-free error before temporary creation in merge and `--check`. These are
+  I/O/persisted-output bounds, not a strict peak-memory bound: decoding,
+  line/state lists, output construction, and CRLF normalization can amplify
+  memory use.
 - A validation gap that allows unsafe public examples.
 
 Do not open a public issue containing tokens, credentials, private keys,

@@ -278,7 +278,11 @@ Raw input counts the UTF-8 BOM and line-ending bytes: the target limit is
 both merge and `--check` exit 2 with a fixed path-free diagnostic before any
 write. The target is read under the same limit again during the pre-commit
 conflict check; temporary and recovery verification use the exact expected
-payload length.
+payload length. The final raw merged output is also capped at 8 MiB after BOM
+and LF/CRLF restoration. Exact-limit output remains reusable; a limit-plus-one
+append, replacement, or normalization makes merge and `--check` exit 2 with a
+fixed path-free diagnostic before temporary creation. These are raw I/O and
+persisted-output limits, not a Python peak-memory budget.
 The target identity, metadata, and bytes are rechecked just before commit.
 Changes completed before that check are detected, but the check and replacement
 are separate operations; externally serialize every writer when an existing
@@ -378,10 +382,10 @@ the scanner back into the trap, these tests fail first.
   endings are refused — they would break byte idempotency. A file mixing
   CRLF and LF is treated as CRLF (any CRLF present selects CRLF), rewritten
   once as `normalized`, and stable from the second run on.
-- The 8 MiB target and 2 MiB canonical-block limits bound raw snapshot I/O,
-  not Python peak memory. Decoding, line/state lists, merged output, and CRLF
-  normalization can use more memory; this reference has no separate line-count
-  budget or streaming parser.
+- The 8 MiB target/final-output and 2 MiB canonical-block limits bound raw
+  snapshot I/O and persisted output, not Python peak memory. Decoding,
+  line/state lists, output construction, and CRLF normalization can use more
+  memory; this reference has no separate line-count budget or streaming parser.
 - The target must be missing or an ordinary file with one hard link.
   Symbolic-link and multi-hard-link targets are refused; choose the intended
   ordinary file path explicitly.
