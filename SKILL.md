@@ -283,6 +283,12 @@ and LF/CRLF restoration. Exact-limit output remains reusable; a limit-plus-one
 append, replacement, or normalization makes merge and `--check` exit 2 with a
 fixed path-free diagnostic before temporary creation. These are raw I/O and
 persisted-output limits, not a Python peak-memory budget.
+Raw LF bytes are independently capped at 1,000,000 for the target and final
+output, and 250,000 for the canonical block. CRLF counts once through its LF
+byte, while a BOM does not affect the count. Exact-limit input and output
+succeed, and exact-limit output is a no-op on the next run. Limit-plus-one
+input is rejected before that input's UTF-8 decoding, and limit-plus-one output
+before temporary creation, with fixed path-free diagnostics and no write.
 The target identity, metadata, and bytes are rechecked just before commit.
 Changes completed before that check are detected, but the check and replacement
 are separate operations; externally serialize every writer when an existing
@@ -389,8 +395,9 @@ the scanner back into the trap, these tests fail first.
   median process peak on one Windows / CPython 3.11 environment; the value is
   descriptive, not a cross-platform guarantee or CI threshold. See
   [`docs/peak-memory-characterization.md`](docs/peak-memory-characterization.md).
-  This reference still has no separate line-count budget or streaming parser;
-  line-count fail-closed handling is the measured next step.
+  The reference caps raw LF bytes at 1,000,000 for the target/final output and
+  250,000 for the canonical block. It still has no streaming parser, so these
+  bounds reduce accepted density without becoming a strict peak-memory limit.
 - The target must be missing or an ordinary file with one hard link.
   Symbolic-link and multi-hard-link targets are refused; choose the intended
   ordinary file path explicitly.

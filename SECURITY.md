@@ -57,6 +57,12 @@ Use GitHub private vulnerability reporting for:
   output is separately capped at 8 MiB after BOM/EOL restoration. Exact-limit
   output remains reusable; limit-plus-one output returns exit 2 with a fixed
   path-free error before temporary creation in merge and `--check`. These are
+  supplemented by raw LF-byte limits of 1,000,000 for target input and final
+  output, and 250,000 for canonical-block input. CRLF counts once through its
+  LF byte. Exact-limit input and output succeed, and exact-limit output is a
+  no-op on the next run. Limit-plus-one input is rejected before that input's
+  UTF-8 decoding, and limit-plus-one output before temporary creation, with
+  fixed path-free diagnostics and no write. These are
   I/O/persisted-output bounds, not a strict peak-memory bound: decoding,
   line/state lists, output construction, and CRLF normalization can amplify
   memory use. The bounded synthetic characterization observed a 230.06 MiB
@@ -64,8 +70,8 @@ Use GitHub private vulnerability reporting for:
   CPython 3.11 environment. The value is descriptive, not a cross-platform
   guarantee or CI threshold; see
   [`docs/peak-memory-characterization.md`](docs/peak-memory-characterization.md).
-  A line-count budget is the next planned fail-closed boundary, but is not yet
-  implemented.
+  The newline budget reduces accepted line density but is not a streaming
+  parser or a strict process-memory guarantee.
 - A validation gap that allows unsafe public examples.
 
 Do not open a public issue containing tokens, credentials, private keys,

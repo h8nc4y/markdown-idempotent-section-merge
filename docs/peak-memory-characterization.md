@@ -1,22 +1,25 @@
 # Peak-memory characterization
 
 - 計測日: 2026-08-01 JST
-- 状態: PEAK-MEM-01 実測済み
+- 状態: PEAK-MEM-01 実測済み / LINE-BUDGET-01 反映済み
 
 ## 目的
 
 `merge_section.py` の 8 MiB target / final-output budget は raw I/O と永続化出力の
 境界であり、process memory の上限ではない。短行多数、CRLF正規化、append、replace
-で生じる増幅を合成Markdownだけで測り、次の安全対策を line-count budget と
-streaming parser のどちらから始めるか判断する。
+で生じる増幅を合成Markdownだけで測り、次の安全対策を newline budget と
+streaming parser のどちらから始めるか判断した。
 
-production実装、8 MiB / 2 MiBの既存byte contract、CLI APIは変更しない。計測値を
-CIのmemory thresholdにも使わない。
+この文書のexact 8 MiB値は、production実装を変えずに計測したcommit `da8991d`
+時点のhistorical evidenceである。その後のLINE-BUDGET-01は8 MiB / 2 MiBのbyte
+contractを維持したままraw LF数を制限した。計測値はCIのmemory thresholdに使わない。
 
 ## 計測契約
 
 - `scripts/measure_peak_memory.py` が case × repetition ごとに fresh Python
-  subprocessを1つ起動する。既定は5 cases × 3 repetitions。
+  subprocessを1つ起動する。既定は5 cases × 3 repetitions、1 MiB / case。
+  明示指定のbyte上限は8 MiBを維持するが、現行productionのnewline budgetを超える
+  dense 8 MiB caseは意図どおり拒否される。
 - fixtureは64 KiB以下のchunkで生成し、target、block、finalは既存byte budget内に
   閉じる。実データ、secret、外部通信は使わない。
 - 既定metricはprocess lifetimeのpeak RSS。Windowsは
@@ -31,7 +34,7 @@ CIのmemory thresholdにも使わない。
 - action、byte budget、JSON schema、timeout、temporary artifactはpass / fail条件。
   peak MiB、増幅率、OS差は記述値であり、pass / fail条件ではない。
 
-## Fixture matrix
+## Historical 8 MiB fixture matrix
 
 | case | raw target bytes | final bytes | target lines | expected action |
 | --- | ---: | ---: | ---: | --- |
@@ -45,7 +48,7 @@ Block inputは全caseで21 bytesのcanonical H2だけを使う。LF / CRLF appen
 final blockを逆算し、replaceは同byte長のold/new bodyを使う。mixed-EOLは先頭1行だけ
 CRLF、残りをLFにして、contentが同一のままfinal CRLFがexact 8 MiBになるようにする。
 
-## Windows / CPython 3.11 実測
+## Historical Windows / CPython 3.11 実測
 
 環境は Windows 11 Pro build 26200、AMD64、CPython 3.11.15。計測JSONの
 `platform.release()` raw値は`10`であり、marketing OS名として解釈していない。
@@ -85,20 +88,30 @@ whole-worker値であり、両者を相互変換しない。
    Windows環境でmedian 230.06 MiB、max 230.09 MiBまで増幅した。
 2. 同じfinal 8 MiBでも4,194,296行のLF replaceは2,796,197行のCRLF replaceより
    peakが高い。raw bytesだけでなくline densityが主要因である。
-3. 次の安全な対策は **line-count budgetを先行**する。既存parserをstreaming化する
-   より変更面が小さく、decodeとline/state list生成の前にfail closedできる。
-4. exact cap値はこの単一hostのpeakから直ちに固定しない。代表的な通常Markdownの
-   compatibility fixtureと、raw newline countの境界回帰を別task
-   `LINE-BUDGET-01`で作り、cap・固定path-free診断・no-writeを同時に決める。
-5. streaming parserはline-count budget後も必要な大規模互換要件が確認された場合の
-   別Class L候補とする。
+3. **LINE-BUDGET-01を先行実装した。** raw LF byteをtarget 1,000,000、canonical
+   block 250,000、final output 1,000,000へ制限し、decode / temporary creation前に
+   固定・path-free診断でfail closedする。CRLFはLFを1つ含むため1回と数える。
+4. capは単一hostのpeak値から逆算せず、通常長の100,000行paragraph互換fixture、
+   exact / limit+1境界、LF / BOM+CRLF、no-write回帰で固定した。8 MiB targetでは
+   1,000,000改行が占める平均byte数は約8.39 bytes / newlineであり、高密度な短行を
+   先に拒否しつつ既存byte contractを維持する。
+5. streaming parserはnewline budget後も必要な大規模互換要件が確認された場合の
+   別Class L候補とする。現在のnewline capもstrictなpeak-memory保証ではない。
 
 ## 再現コマンド
 
-Full 8 MiB process-peak matrix:
+現行production契約内の1 MiB health matrix:
 
 ```powershell
-python scripts/measure_peak_memory.py --repetitions 3 --timeout-seconds 180
+python scripts/measure_peak_memory.py --repetitions 1 --timeout-seconds 60
+```
+
+上表のfull 8 MiB process-peak matrixはcommit `da8991d`のisolated checkoutで次を
+実行して得たhistorical evidenceである。現行codeへ同じ8 MiB dense fixtureを渡すと
+newline budgetで意図どおり拒否される。
+
+```powershell
+python scripts/measure_peak_memory.py --target-bytes 8388608 --repetitions 3 --timeout-seconds 180
 ```
 
 CI向け縮小matrix:

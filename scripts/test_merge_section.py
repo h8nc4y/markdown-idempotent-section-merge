@@ -3297,6 +3297,251 @@ class FileLevelTests(unittest.TestCase):
         self.assertNotIn(-1, read_sizes)
         self.assertIn(b"new.", target.read_bytes())
 
+    def test_raw_newline_budget_accepts_exact_limit_and_rejects_limit_plus_one(self):
+        limit = 4
+
+        # LF byteをraw段階で数えるため、BOMやCRLFでもlogical separator数は
+        # 変わらない。exactは受理し、同じ固定診断でlimit+1だけを拒否する。
+        for raw in (
+            b"\n" * limit,
+            merge_section._BOM + (b"line\r\n" * limit) + b"tail",
+        ):
+            with self.subTest(raw_prefix=raw[:3]):
+                self.assertIsNone(
+                    merge_section._assert_raw_newline_budget(
+                        raw,
+                        max_newlines=limit,
+                        oversize_error="newline limit crossed",
+                    )
+                )
+
+        with self.assertRaisesRegex(
+            merge_section.MergeError,
+            "^newline limit crossed$",
+        ):
+            merge_section._assert_raw_newline_budget(
+                b"\n" * (limit + 1),
+                max_newlines=limit,
+                oversize_error="newline limit crossed",
+            )
+
+        # 実定数のexact境界もhelperだけで固定し、million-line文書をmergeして
+        # CI memoryを不必要に増やさずoff-by-oneを検出する。
+        self.assertEqual(merge_section._MAX_TARGET_NEWLINES, 1_000_000)
+        self.assertEqual(merge_section._MAX_BLOCK_NEWLINES, 250_000)
+        self.assertEqual(
+            merge_section._MAX_OUTPUT_NEWLINES,
+            merge_section._MAX_TARGET_NEWLINES,
+        )
+        merge_section._assert_raw_newline_budget(
+            b"\n" * merge_section._MAX_TARGET_NEWLINES,
+            max_newlines=merge_section._MAX_TARGET_NEWLINES,
+            oversize_error=merge_section._TARGET_NEWLINE_OVERSIZE_ERROR,
+        )
+        with self.assertRaisesRegex(
+            merge_section.MergeError,
+            "^target exceeds the supported newline count limit$",
+        ):
+            merge_section._assert_raw_newline_budget(
+                b"\n" * (merge_section._MAX_TARGET_NEWLINES + 1),
+                max_newlines=merge_section._MAX_TARGET_NEWLINES,
+                oversize_error=merge_section._TARGET_NEWLINE_OVERSIZE_ERROR,
+            )
+
+        # 100,000行の通常長paragraphはbyte/newline両budget内に十分収まり、
+        # 大規模だが高密度ではない既存Markdownを新境界が拒否しない。
+        representative = b"ordinary markdown paragraph for compatibility\n" * 100_000
+        self.assertLess(len(representative), merge_section._MAX_TARGET_BYTES)
+        self.assertLess(
+            representative.count(b"\n"),
+            merge_section._MAX_TARGET_NEWLINES,
+        )
+        merge_section._assert_raw_newline_budget(
+            representative,
+            max_newlines=merge_section._MAX_TARGET_NEWLINES,
+            oversize_error=merge_section._TARGET_NEWLINE_OVERSIZE_ERROR,
+        )
+
+    def test_cli_rejects_target_newline_limit_plus_one_before_decode_or_write(self):
+        marker = "非公開ターゲット行数標識"
+        original = b"x\nx\nx\n"
+        block_bytes = b"## Notes\n\nnew.\n"
+        target = self._write("%s.md" % marker, original)
+        block = self._write("section.md", block_bytes)
+
+        for check_args in ((), ("--check",)):
+            with self.subTest(check=bool(check_args)):
+                stderr = io.StringIO()
+                stdout = io.StringIO()
+                with (
+                    mock.patch.object(merge_section, "_MAX_TARGET_NEWLINES", 2),
+                    mock.patch.object(merge_section, "_decode") as decode,
+                    mock.patch.object(
+                        merge_section,
+                        "_open_atomic_temporary",
+                    ) as temporary_open,
+                    mock.patch.object(sys, "stderr", stderr),
+                    mock.patch.object(sys, "stdout", stdout),
+                ):
+                    result = merge_section.main(
+                        [str(target), str(block), *check_args]
+                    )
+
+                self.assertEqual(result, 2)
+                self.assertEqual(stdout.getvalue(), "")
+                self.assertEqual(
+                    stderr.getvalue(),
+                    "error: target exceeds the supported newline count limit\n",
+                )
+                self.assertNotIn(marker, stderr.getvalue())
+                decode.assert_not_called()
+                temporary_open.assert_not_called()
+                self.assertEqual(target.read_bytes(), original)
+
+    def test_cli_rejects_block_newline_limit_plus_one_before_merge_or_write(self):
+        marker = "非公開ブロック行数標識"
+        original = b"# Doc\n\n## Notes\n\nold.\n"
+        block_bytes = ("## Notes\n\n%s\nextra\n" % marker).encode("utf-8")
+        target = self._write("target.md", original)
+        block = self._write("%s.md" % marker, block_bytes)
+
+        for check_args in ((), ("--check",)):
+            with self.subTest(check=bool(check_args)):
+                stderr = io.StringIO()
+                stdout = io.StringIO()
+                with (
+                    mock.patch.object(merge_section, "_MAX_BLOCK_NEWLINES", 3),
+                    mock.patch.object(
+                        merge_section,
+                        "_decode",
+                        wraps=merge_section._decode,
+                    ) as decode,
+                    mock.patch.object(merge_section, "merge") as merge_call,
+                    mock.patch.object(
+                        merge_section,
+                        "_open_atomic_temporary",
+                    ) as temporary_open,
+                    mock.patch.object(sys, "stderr", stderr),
+                    mock.patch.object(sys, "stdout", stdout),
+                ):
+                    result = merge_section.main(
+                        [str(target), str(block), *check_args]
+                    )
+
+                self.assertEqual(result, 2)
+                self.assertEqual(stdout.getvalue(), "")
+                self.assertEqual(
+                    stderr.getvalue(),
+                    "error: block exceeds the supported newline count limit\n",
+                )
+                self.assertNotIn(marker, stderr.getvalue())
+                decode.assert_called_once_with(original, "target")
+                merge_call.assert_not_called()
+                temporary_open.assert_not_called()
+                self.assertEqual(block.read_bytes(), block_bytes)
+
+    def test_output_newline_limit_rejects_growth_without_writing(self):
+        cases = (
+            (
+                "append",
+                b"# Doc\n",
+                b"## Notes\n\nnew.\n",
+            ),
+            (
+                "replace",
+                b"# Doc\n\n## Notes\nold.\n",
+                b"## Notes\n\nnew.\nextra.\n",
+            ),
+        )
+
+        for case_name, original, block_bytes in cases:
+            target = self._write("%s-target.md" % case_name, original)
+            block = self._write("%s-section.md" % case_name, block_bytes)
+            for check_args in ((), ("--check",)):
+                with self.subTest(case=case_name, check=bool(check_args)):
+                    stderr = io.StringIO()
+                    stdout = io.StringIO()
+                    with (
+                        mock.patch.object(
+                            merge_section,
+                            "_MAX_TARGET_NEWLINES",
+                            original.count(b"\n"),
+                        ),
+                        mock.patch.object(
+                            merge_section,
+                            "_MAX_BLOCK_NEWLINES",
+                            block_bytes.count(b"\n"),
+                        ),
+                        mock.patch.object(
+                            merge_section,
+                            "_MAX_OUTPUT_NEWLINES",
+                            original.count(b"\n"),
+                        ),
+                        mock.patch.object(
+                            merge_section,
+                            "_open_atomic_temporary",
+                        ) as temporary_open,
+                        mock.patch.object(sys, "stderr", stderr),
+                        mock.patch.object(sys, "stdout", stdout),
+                    ):
+                        result = merge_section.main(
+                            [str(target), str(block), *check_args]
+                        )
+
+                    self.assertEqual(result, 2)
+                    self.assertEqual(stdout.getvalue(), "")
+                    self.assertEqual(
+                        stderr.getvalue(),
+                        "error: merged output exceeds the supported newline count limit\n",
+                    )
+                    temporary_open.assert_not_called()
+                    self.assertEqual(target.read_bytes(), original)
+
+    def test_exact_newline_limits_preserve_lf_crlf_bom_and_second_run(self):
+        text = "# Doc\n\n## Notes\n\nold.\n"
+        block_text = "## Notes\n\nnew.\n"
+        expected_text = "# Doc\n\n## Notes\n\nnew.\n"
+
+        for label, eol, bom in (
+            ("lf", b"\n", b""),
+            ("bom-crlf", b"\r\n", merge_section._BOM),
+        ):
+            target_bytes = bom + text.replace("\n", eol.decode()).encode("utf-8")
+            block_bytes = block_text.replace("\n", eol.decode()).encode("utf-8")
+            expected = bom + expected_text.replace("\n", eol.decode()).encode(
+                "utf-8"
+            )
+            target = self._write("%s-target.md" % label, target_bytes)
+            block = self._write("%s-section.md" % label, block_bytes)
+
+            with self.subTest(style=label):
+                with (
+                    mock.patch.object(
+                        merge_section,
+                        "_MAX_TARGET_NEWLINES",
+                        target_bytes.count(b"\n"),
+                    ),
+                    mock.patch.object(
+                        merge_section,
+                        "_MAX_BLOCK_NEWLINES",
+                        block_bytes.count(b"\n"),
+                    ),
+                    mock.patch.object(
+                        merge_section,
+                        "_MAX_OUTPUT_NEWLINES",
+                        expected.count(b"\n"),
+                    ),
+                ):
+                    changed, action = merge_section.merge_file(target, block)
+                    self.assertTrue(changed)
+                    self.assertEqual(action, "replaced")
+                    self.assertEqual(target.read_bytes(), expected)
+
+                    changed, action = merge_section.merge_file(target, block)
+                    self.assertFalse(changed)
+                    self.assertEqual(action, "unchanged")
+                    self.assertEqual(target.read_bytes(), expected)
+
     def test_commit_precheck_tolerates_path_timestamp_precision_difference(self):
         original = b"# Doc\n\n## Notes\n\nold.\n"
         target = self._write("target.md", original)
@@ -4530,6 +4775,39 @@ class FileLevelTests(unittest.TestCase):
 
 class PeakMemoryMeasurementTests(unittest.TestCase):
     """縮小fixtureで計測CLIのprocess・schema契約だけを固定する。"""
+
+    def test_default_measurement_matrix_stays_within_target_line_budget(self):
+        # 8 MiBの明示上限は維持しつつ、既定matrixは高密度LFでも行数上限内に収める。
+        self.assertEqual(measure_peak_memory.MAX_TARGET_BYTES, 8 * 1024 * 1024)
+        self.assertEqual(measure_peak_memory.DEFAULT_TARGET_BYTES, 1 * 1024 * 1024)
+
+        parser = measure_peak_memory._build_parser()
+        self.assertEqual(
+            parser.parse_args([]).target_bytes,
+            measure_peak_memory.DEFAULT_TARGET_BYTES,
+        )
+        self.assertEqual(
+            parser.parse_args(
+                ["--target-bytes", str(measure_peak_memory.MAX_TARGET_BYTES)]
+            ).target_bytes,
+            measure_peak_memory.MAX_TARGET_BYTES,
+        )
+        with io.StringIO() as stderr, mock.patch("sys.stderr", stderr):
+            with self.assertRaises(SystemExit) as raised:
+                parser.parse_args(
+                    ["--target-bytes", str(measure_peak_memory.MAX_TARGET_BYTES + 1)]
+                )
+        self.assertEqual(raised.exception.code, 2)
+
+        for eol in (b"\n", b"\r\n"):
+            with self.subTest(eol=eol):
+                line_count, _last_text_bytes, _has_remainder = (
+                    measure_peak_memory._short_line_shape(
+                        measure_peak_memory.DEFAULT_TARGET_BYTES,
+                        eol,
+                    )
+                )
+                self.assertLessEqual(line_count, merge_section._MAX_TARGET_NEWLINES)
 
     def test_reduced_matrix_reports_actions_bytes_and_peak_metrics(self):
         # CIでは64 KiBへ縮小し、OS依存のpeak値そのものは合否に使わない。

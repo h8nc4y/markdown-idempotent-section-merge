@@ -248,6 +248,11 @@ UTF-8 BOM と LF/CRLF を含む raw bytes を数え、ターゲットは 8 MiB
 8 MiBを上限とします。上限ちょうどの出力は次回も受理されてno-opになり、
 上限+1のappend・replacement・normalizationは、通常実行と`--check`の双方で
 一時ファイル作成前に固定・path-free診断と終了コード2で拒否します。
+raw LF byte数も独立に数え、ターゲットとfinal outputは1,000,000、正本ブロックは
+250,000を上限とします。CRLFはLF byteを1つ含むため1回、BOMは0回と数えます。
+上限ちょうどの入力・出力は受理し、上限ちょうどの出力は次回no-opになります。
+上限+1の入力は各入力自身のUTF-8 decode前、上限+1の出力は一時ファイル作成前に、
+固定・path-free診断、no-writeで拒否します。
 確定直前にターゲットの identity・metadata・全バイトを再確認します。この
 再確認より前に完了した変更は検出できますが、再確認と置換は別操作です。
 既存ターゲットの lost update を防ぐ必要がある場合は、すべての writer を
@@ -356,8 +361,9 @@ python scripts/test_merge_section.py
   1環境でprocess peakのmedianは230.06 MiBでした。この値は記述値であり、
   cross-platform保証やCI thresholdではありません。詳細は
   [`peak-memory-characterization.md`](peak-memory-characterization.md)を参照してください。
-  参照実装に別のline-count budgetやstreaming parserはまだなく、line-countの
-  fail-closed化を次の候補とします。
+  参照実装はターゲット/final outputのraw LFを1,000,000、正本ブロックを250,000へ
+  制限します。streaming parserではないため、受理するline densityを減らしても
+  strictなpeak-memory上限にはなりません。
 - ターゲットは未作成、またはハードリンク数1の通常ファイルに限ります。
   シンボリックリンクと複数ハードリンクのファイルは拒否するため、更新対象の
   通常ファイルを明示してください。

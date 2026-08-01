@@ -16,6 +16,14 @@ The format loosely follows Keep a Changelog conventions.
 
 ### Changed
 
+- Cap raw LF bytes at 1,000,000 for target input and final output, and 250,000
+  for canonical-block input. Accept exact limits, reject limit-plus-one input
+  before UTF-8 decoding and output before temporary creation with fixed
+  path-free diagnostics, and retain LF / BOM+CRLF idempotency plus a
+  100,000-line ordinary-length paragraph compatibility case. Change the
+  peak-memory health matrix default to 1 MiB while retaining 8 MiB as its
+  explicit byte maximum; the documented dense 8 MiB matrix remains historical
+  pre-newline-budget evidence.
 - Cap the final merged raw output at the target's 8 MiB input boundary after
   BOM and LF/CRLF restoration. Accept an exact-limit reusable output, and
   reject a limit-plus-one append, replacement, or normalization with exit 2

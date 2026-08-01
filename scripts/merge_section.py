@@ -254,9 +254,24 @@ _MAX_BLOCK_BYTES = 2 * 1024 * 1024
 # 自身が生成したtargetを次回も受理できるclosureを守るため、final raw outputは
 # target inputと同じ上限へ固定する。BOMとCRLF展開後のbytesを判定対象にする。
 _MAX_OUTPUT_BYTES = _MAX_TARGET_BYTES
+# 8/2 MiBを平均約8 bytes未満の極端な短行で埋めた場合だけ先に拒否し、通常の
+# Markdown互換性を広く残す。raw LF byteをdecode前に数えるので、CRLFでも同じ
+# logical separator数になり、BOMやUnicode decodeに依存しない。
+_MAX_TARGET_NEWLINES = 1_000_000
+_MAX_BLOCK_NEWLINES = 250_000
+# 追記・置換で生成したtargetが次回のinput budgetを越えないよう、byte closureと
+# 同じくfinal outputもtarget上限へ閉じる。
+_MAX_OUTPUT_NEWLINES = _MAX_TARGET_NEWLINES
 _TARGET_OVERSIZE_ERROR = "target exceeds the supported byte limit"
 _BLOCK_OVERSIZE_ERROR = "block exceeds the supported byte limit"
 _OUTPUT_OVERSIZE_ERROR = "merged output exceeds the supported byte limit"
+_TARGET_NEWLINE_OVERSIZE_ERROR = (
+    "target exceeds the supported newline count limit"
+)
+_BLOCK_NEWLINE_OVERSIZE_ERROR = "block exceeds the supported newline count limit"
+_OUTPUT_NEWLINE_OVERSIZE_ERROR = (
+    "merged output exceeds the supported newline count limit"
+)
 
 
 class MergeError(ValueError):
@@ -265,6 +280,15 @@ class MergeError(ValueError):
 
 class _SnapshotByteLimitError(MergeError):
     """Identify a stable snapshot that crossed its caller-owned byte budget."""
+
+
+def _assert_raw_newline_budget(raw, *, max_newlines, oversize_error):
+    """Reject RAW when its LF-byte count exceeds the caller-owned budget."""
+
+    # bytes.countはdecodeやline list生成を伴わない。limit自体は非負の固定定数／
+    # test overrideだけを受け、入力由来のpathや内容を診断へ反射しない。
+    if raw.count(b"\n") > max_newlines:
+        raise MergeError(oversize_error)
 
 
 class AtomicCommitError(MergeError):
@@ -2623,6 +2647,13 @@ def merge_file(target, block, write=True):
         oversize_error=_TARGET_OVERSIZE_ERROR,
         missing_ok=True,
     )
+    # 高密度短行でbyte budget内でもline/state listが増幅するため、decodeより
+    # 前のraw LF-byte段階でfail closedする。
+    _assert_raw_newline_budget(
+        raw,
+        max_newlines=_MAX_TARGET_NEWLINES,
+        oversize_error=_TARGET_NEWLINE_OVERSIZE_ERROR,
+    )
     has_bom = raw.startswith(_BOM)
     text = _decode(raw, "target")
     eol = "\r\n" if "\r\n" in text else "\n"
@@ -2635,6 +2666,11 @@ def merge_file(target, block, write=True):
         require_effective_owner=False,
         reject_encrypted=False,
     )
+    _assert_raw_newline_budget(
+        block_bytes,
+        max_newlines=_MAX_BLOCK_NEWLINES,
+        oversize_error=_BLOCK_NEWLINE_OVERSIZE_ERROR,
+    )
     block_text = _decode(block_bytes, "block").replace("\r\n", "\n")
 
     merged, action = merge(normalized, block_text)
@@ -2644,6 +2680,13 @@ def merge_file(target, block, write=True):
     # 再付与したfinal bytesだけを検査し、temp作成前に固定診断でfail closedする。
     if len(out_bytes) > _MAX_OUTPUT_BYTES:
         raise MergeError(_OUTPUT_OVERSIZE_ERROR)
+    # byte上限との既存診断優先度を守った後、次回targetとしても受理できる
+    # newline closureをtemp作成前に固定する。
+    _assert_raw_newline_budget(
+        out_bytes,
+        max_newlines=_MAX_OUTPUT_NEWLINES,
+        oversize_error=_OUTPUT_NEWLINE_OVERSIZE_ERROR,
+    )
     changed = out_bytes != raw
     if not changed:
         action = "unchanged"

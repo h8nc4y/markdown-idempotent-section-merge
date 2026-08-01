@@ -30,7 +30,10 @@ PROCESS_PEAK_METRIC = "process-peak-rss"
 TRACEMALLOC_METRIC = "python-tracemalloc"
 DEFAULT_METRIC = PROCESS_PEAK_METRIC
 METRIC_CHOICES = (PROCESS_PEAK_METRIC, TRACEMALLOC_METRIC)
-DEFAULT_TARGET_BYTES = 8 * 1024 * 1024
+# 現行の行数上限でも全caseが成功する1 MiBを、日常的な健全性確認の既定値にする。
+DEFAULT_TARGET_BYTES = 1 * 1024 * 1024
+# CLI引数範囲の互換を保つため、明示指定のbyte上限は8 MiBを維持する。
+MAX_TARGET_BYTES = 8 * 1024 * 1024
 MIN_TARGET_BYTES = 16 * 1024
 MAX_REPETITIONS = 10
 DEFAULT_REPETITIONS = 3
@@ -282,7 +285,7 @@ def _measure_worker(case_id, repetition, work_dir, target_bytes, metric):
     # 数値を記録する前にaction・byte・cleanup契約を固定条件として検証する。
     if not changed or actual_action != fixture["expected_action"]:
         raise MeasurementError("worker action contract failed")
-    if fixture["target_bytes_before"] > DEFAULT_TARGET_BYTES:
+    if fixture["target_bytes_before"] > MAX_TARGET_BYTES:
         raise MeasurementError("worker target byte contract failed")
     if fixture["block_bytes"] > 2 * 1024 * 1024:
         raise MeasurementError("worker block byte contract failed")
@@ -728,9 +731,9 @@ def _build_parser():
     )
     parser.add_argument(
         "--target-bytes",
-        type=_bounded_int("target-bytes", MIN_TARGET_BYTES, DEFAULT_TARGET_BYTES),
+        type=_bounded_int("target-bytes", MIN_TARGET_BYTES, MAX_TARGET_BYTES),
         default=DEFAULT_TARGET_BYTES,
-        help="final target size per case (default: 8 MiB)",
+        help="final target size per case (default: 1 MiB; maximum: 8 MiB)",
     )
     parser.add_argument(
         "--repetitions",
