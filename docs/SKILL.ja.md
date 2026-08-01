@@ -352,7 +352,12 @@ python scripts/test_merge_section.py
 - 8 MiBターゲット/final output・2 MiB正本ブロックの上限はraw snapshot I/Oと
   永続化出力の境界であり、Pythonのpeak memory上限ではありません。decode、
   line/state list、output構築、CRLF正規化でraw入力より多くのmemoryを使います。
-  別のline-count budgetとstreaming parserは参照実装の範囲外です。
+  exact 8 MiBの高密度LF replaceを合成計測すると、Windows / CPython 3.11の
+  1環境でprocess peakのmedianは230.06 MiBでした。この値は記述値であり、
+  cross-platform保証やCI thresholdではありません。詳細は
+  [`peak-memory-characterization.md`](peak-memory-characterization.md)を参照してください。
+  参照実装に別のline-count budgetやstreaming parserはまだなく、line-countの
+  fail-closed化を次の候補とします。
 - ターゲットは未作成、またはハードリンク数1の通常ファイルに限ります。
   シンボリックリンクと複数ハードリンクのファイルは拒否するため、更新対象の
   通常ファイルを明示してください。

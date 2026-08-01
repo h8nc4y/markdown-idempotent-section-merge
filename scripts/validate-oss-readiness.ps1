@@ -838,11 +838,13 @@ $requiredFiles = @(
     'docs/frontmatter-heading-scan-contract.md',
     'docs/html-block-heading-scan-contract.md',
     'docs/macos-ci-contract.md',
+    'docs/peak-memory-characterization.md',
     'examples/before-after.md',
     'examples/verification-recipe.md',
     'docs/private-marker-scanner-hardening.md',
     'docs/setup-python-node24-pin-contract.md',
     'scripts/merge_section.py',
+    'scripts/measure_peak_memory.py',
     'scripts/test_merge_section.py',
     'scripts/private-marker-process.ps1',
     'scripts/scan-private-markers.ps1',
@@ -868,6 +870,7 @@ Assert-FileContains -RelativePath 'README.md' -Pattern 'CONTRIBUTING\.md' -Descr
 Assert-FileContains -RelativePath 'README.md' -Pattern 'SECURITY\.md' -Description 'link to SECURITY.md'
 Assert-FileContains -RelativePath 'README.md' -Pattern 'docs/SKILL\.ja\.md' -Description 'link to the Japanese skill version'
 Assert-FileContains -RelativePath 'README.md' -Pattern 'merge_section\.py' -Description 'reference implementation usage'
+Assert-FileContains -RelativePath 'README.md' -Pattern '\[the peak-memory characterization\]\(docs/peak-memory-characterization\.md\)' -Description 'peak-memory characterization link'
 Assert-FileContains -RelativePath 'README.md' -Pattern '(?is)final merged raw output.*8 MiB.*exact-limit output.*limit-plus-one' -Description 'public output closure contract'
 Assert-FileContains -RelativePath 'README.md' -Pattern 'docs/closing-hash-managed-heading-contract\.md' -Description 'link to the closing-hash identity contract'
 Assert-FileContains -RelativePath 'README.md' -Pattern 'docs/commonmark-ascii-whitespace-contract\.md' -Description 'link to the CommonMark ASCII whitespace contract'
@@ -878,6 +881,8 @@ Assert-FileContains -RelativePath 'SKILL.md' -Pattern '(?is)ASCII-only block whi
 Assert-FileContains -RelativePath 'docs/SKILL.ja.md' -Pattern '(?is)block whitespace.*ASCII限定.*NBSP.*EM SPACE.*form feed.*vertical tab' -Description 'Japanese CommonMark ASCII-only block whitespace contract'
 Assert-FileContains -RelativePath 'SKILL.md' -Pattern '(?is)final raw merged output.*8 MiB.*limit-plus-one.*temporary creation' -Description 'skill output closure contract'
 Assert-FileContains -RelativePath 'docs/SKILL.ja.md' -Pattern '(?is)final raw output.*8 MiB.*上限\+1.*一時ファイル作成前' -Description 'Japanese skill output closure contract'
+Assert-FileContains -RelativePath 'SKILL.md' -Pattern '(?is)230\.06 MiB.*descriptive.*peak-memory-characterization\.md.*line-count' -Description 'skill peak-memory limitation link'
+Assert-FileContains -RelativePath 'docs/SKILL.ja.md' -Pattern '(?is)230\.06 MiB.*記述値.*peak-memory-characterization\.md.*line-count' -Description 'Japanese skill peak-memory limitation link'
 Assert-FileContains -RelativePath 'SKILL.md' -Pattern '(?is)frontmatter.*YAML.*TOML.*fail' -Description 'frontmatter-aware fail-closed contract'
 Assert-FileContains -RelativePath 'docs/SKILL.ja.md' -Pattern '(?is)frontmatter.*YAML.*TOML.*fail' -Description 'Japanese frontmatter-aware fail-closed contract'
 Assert-FileContains -RelativePath 'docs/frontmatter-heading-scan-contract.md' -Pattern '(?is)YAML.*TOML.*完全一致.*fail closed' -Description 'frontmatter heading-scan design and test contract'
@@ -894,6 +899,8 @@ Assert-FileContains -RelativePath 'CONTRIBUTING.md' -Pattern '(?im)no token|neve
 Assert-FileContains -RelativePath 'SECURITY.md' -Pattern '(?im)do not.*public|private|security' -Description 'private vulnerability reporting guidance'
 Assert-FileContains -RelativePath 'SECURITY.md' -Pattern '(?is)root-level `\.git` file or\s+directory.*fails closed.*Only nested\s+`\.git` directories and leaf `\.git` files' -Description 'root-versus-nested Git metadata scanner contract'
 Assert-FileContains -RelativePath 'SECURITY.md' -Pattern '(?is)Final merged raw\s+output.*8 MiB.*Exact-limit\s+output remains reusable.*limit-plus-one.*before temporary creation.*merge and `--check`' -Description 'security output closure contract'
+Assert-FileContains -RelativePath 'SECURITY.md' -Pattern '(?is)230\.06 MiB.*descriptive.*not a cross-platform.*peak-memory-characterization\.md.*line-count budget' -Description 'security peak-memory limitation contract'
+Assert-FileContains -RelativePath 'docs/peak-memory-characterization.md' -Pattern '(?is)5 cases.*3 repetitions.*process lifetime.*peak RSS.*230\.06 MiB.*line-count budget.*streaming parser' -Description 'peak-memory evidence and next-boundary decision'
 Assert-FileContains -RelativePath 'docs/private-marker-scanner-hardening.md' -Pattern '(?is)Git probe.*valid worktree.*scan root.*ancestor.*`\.git` file/directory.*fail closed' -Description 'detailed root-level Git metadata failure contract'
 Assert-FileContains -RelativePath 'docs/private-marker-scanner-hardening.md' -Pattern 'nested `\.git` directory' -Description 'detailed nested Git directory exclusion contract'
 Assert-FileContains -RelativePath 'docs/private-marker-scanner-hardening.md' -Pattern 'leaf `\.git` file' -Description 'detailed leaf Git metadata exclusion contract'
@@ -907,6 +914,8 @@ Assert-FileContains -RelativePath 'scripts/test_merge_section.py' -Pattern 'test
 Assert-FileContains -RelativePath 'scripts/test_merge_section.py' -Pattern 'test_cli_rejects_append_output_limit_plus_one_without_writing' -Description 'append output limit-plus-one CLI regression'
 Assert-FileContains -RelativePath 'scripts/test_merge_section.py' -Pattern 'test_bom_crlf_longer_replacement_obeys_final_output_limit' -Description 'BOM CRLF replacement output boundary regression'
 Assert-FileContains -RelativePath 'scripts/test_merge_section.py' -Pattern 'test_mixed_eol_normalization_rejects_output_limit_plus_one' -Description 'mixed-EOL normalization output boundary regression'
+Assert-FileContains -RelativePath 'scripts/test_merge_section.py' -Pattern 'test_reduced_matrix_reports_actions_bytes_and_peak_metrics' -Description 'reduced peak-memory subprocess regression'
+Assert-FileContains -RelativePath 'scripts/measure_peak_memory.py' -Pattern '(?is)PROCESS_PEAK_METRIC\s*=\s*"process-peak-rss".*TRACEMALLOC_METRIC\s*=\s*"python-tracemalloc".*MAX_WORKER_OUTPUT_BYTES.*subprocess\.Popen.*process\.wait\(timeout=timeout_seconds\).*process\.kill' -Description 'bounded dual-metric peak-memory worker contract'
 Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern 'scan-private-markers\.ps1' -Description 'private marker scan in CI'
 Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern 'test-scan-private-markers\.ps1' -Description 'private marker scan self-test in CI'
 Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern '(?m)^\s*uses:\s*actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09(?:\s+#\s*v5)?\s*$' -Description 'exact immutable checkout action revision'
