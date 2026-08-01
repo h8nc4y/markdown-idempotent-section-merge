@@ -385,7 +385,12 @@ the scanner back into the trap, these tests fail first.
 - The 8 MiB target/final-output and 2 MiB canonical-block limits bound raw
   snapshot I/O and persisted output, not Python peak memory. Decoding,
   line/state lists, output construction, and CRLF normalization can use more
-  memory; this reference has no separate line-count budget or streaming parser.
+  memory. A synthetic exact-8-MiB dense-LF replacement measured a 230.06 MiB
+  median process peak on one Windows / CPython 3.11 environment; the value is
+  descriptive, not a cross-platform guarantee or CI threshold. See
+  [`docs/peak-memory-characterization.md`](docs/peak-memory-characterization.md).
+  This reference still has no separate line-count budget or streaming parser;
+  line-count fail-closed handling is the measured next step.
 - The target must be missing or an ordinary file with one hard link.
   Symbolic-link and multi-hard-link targets are refused; choose the intended
   ordinary file path explicitly.

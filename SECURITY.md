@@ -59,7 +59,13 @@ Use GitHub private vulnerability reporting for:
   path-free error before temporary creation in merge and `--check`. These are
   I/O/persisted-output bounds, not a strict peak-memory bound: decoding,
   line/state lists, output construction, and CRLF normalization can amplify
-  memory use.
+  memory use. The bounded synthetic characterization observed a 230.06 MiB
+  median process peak for an exact 8 MiB dense-LF replacement on one Windows /
+  CPython 3.11 environment. The value is descriptive, not a cross-platform
+  guarantee or CI threshold; see
+  [`docs/peak-memory-characterization.md`](docs/peak-memory-characterization.md).
+  A line-count budget is the next planned fail-closed boundary, but is not yet
+  implemented.
 - A validation gap that allows unsafe public examples.
 
 Do not open a public issue containing tokens, credentials, private keys,

@@ -2,6 +2,12 @@
 
 ## Current state
 
+完了: PEAK-MEM-01（Class M）は、production mergeを変えずに合成5ケースをfresh
+subprocessで測るCLIと縮小回帰を追加した。Windows / CPython 3.11でexact 8 MiBを
+各3回実測し、全15 samplesが期待action、byte contract、artifact 0を満たした。
+高密度LF replaceのprocess peakはmedian 230.06 MiB、max 230.09 MiB。値は記述値で
+あり、cross-platform保証やCI thresholdではない。
+
 完了: OUTPUT-CLOSURE-01（Class M）はPR #27（merge commit `fc18bf4`）で
 `main`へ統合した。final raw outputをtarget inputと同じ8 MiBへ閉じ、ツール自身が
 次回拒否するtargetを生成できないようにした。
@@ -47,9 +53,36 @@ INPUT-BUDGET-01の実装・follow-up用worktreeとlocal / remote branchはcleanu
 - Windows state-machine fixtureはprotected temporaryのexpected statをwrite handleの
   `os.fstat()`から取得し、production call contractと一致させた。
 - README / SECURITY / SKILL / 日本語SKILL / CHANGELOGを同期した。
+- `scripts/measure_peak_memory.py`はLF/CRLFのappend / replaceとmixed-EOL
+  normalizationをcaseごとのfresh bounded workerで測る。既定はprocess peak RSS、
+  `tracemalloc`は明示指定の補助metric。
+- `scripts/test_merge_section.py`は64 KiBの全5ケースと16 KiBのtracemalloc 1ケースで、
+  JSON schema、action、byte、peak正値、artifact 0をOS依存thresholdなしに固定する。
+- 実測正本は`docs/peak-memory-characterization.md`。raw fixture、temporary path、
+  environment variableは出力・保存しない。
 
 ## Verification
 
+- PEAK-MEM-01 RED: 計測CLI不在で新規1 testがfailure。
+- Focused peak-memory regression: 64 KiB process peak 5ケース＋16 KiB tracemalloc
+  1ケース、output上限+1停止、unexpected例外redaction、partial thread-start cleanup、
+  non-finite schema拒否、worker timeoutを含む6 tests `OK`。
+- 変更後full suite: 170 tests、`OK (skipped=15)`。
+- Full process-peak matrix: Windows 11 Pro build 26200 / AMD64 / CPython 3.11.15、exact 8 MiB、
+  5 cases × 3 repetitions。全15 samplesがtimeout内、期待action、final exact、
+  temporary artifact 0。親側wall-clock 458.9秒。
+- 計測script SHA-256は開始・終了とも`795C3392...E2807`で一致。
+- Peak RSS median: LF append 197.88 MiB、LF replace 230.06 MiB、CRLF append
+  150.12 MiB、CRLF replace 171.38 MiB、mixed-EOL normalize 165.34 MiB。
+- `tracemalloc`: 1 MiB LF appendはtraced peak 22,379,533 bytesで成功。8 MiB LF
+  appendは180秒worker timeout（親側wall-clock 180.7秒）のため同条件を再試行せず、
+  full matrixはprocess peakへ切り替えた。
+- PEAK-MEM-01 final gate: PowerShell 7 / Windows PowerShell 5.1 readiness、
+  scanner self-test / actual scanともPASS。Gitleaksはworktree・history 33 commitsで
+  finding 0。Semgrep `p/default`は324 rules / 36 files / finding 0。
+- PEAK-MEM-01の`py_compile`、CLI help、`git diff --check`: PASS。production merge
+  runtimeとGitHub Actions workflowに差分なし。独立code-boundary / docs reviewは
+  追加回帰と最終計測値の同期後、P0〜P3 CLEAR。
 - OUTPUT-CLOSURE-01 baseline: 160 tests、`OK (skipped=15)`。
 - RED: 新規3 testsがoutput定数不存在で4 errorになることを確認。
 - focused output closure: 4 tests、`OK`。実8 MiB exact appendと次回no-op、
@@ -104,7 +137,10 @@ INPUT-BUDGET-01の実装・follow-up用worktreeとlocal / remote branchはcleanu
 - 8/2 MiBは互換性より安全性を優先したraw I/O境界。blockは1節だけなのでtargetと
   同額にしない。
 - byte/output budgetはpeak-memory保証ではない。decode、line/state list、output構築、
-  CRLF正規化で増幅する。line-count budget / streaming parserは後続候補。
+  CRLF正規化で増幅する。実測ではline densityの影響が大きいため、次はstreaming
+  parserより小さい変更面のline-count budgetを先行する。
+- exact line capは単一Windows hostのpeak値から固定しない。代表的通常Markdownの
+  compatibility fixtureとraw newline count境界をLINE-BUDGET-01で定義する。
 - commit再確認とreplaceはCASではなく、既存の最終lost-update windowは残る。
 - Release / tagはowner gateのまま。
 
@@ -112,11 +148,14 @@ INPUT-BUDGET-01の実装・follow-up用worktreeとlocal / remote branchはcleanu
 
 - `scripts/merge_section.py`
 - `scripts/test_merge_section.py`
+- `scripts/measure_peak_memory.py`
+- `docs/peak-memory-characterization.md`
 - `README.md`
 - `SECURITY.md`
 - `SKILL.md`
 - `docs/SKILL.ja.md`
 - `CHANGELOG.md`
 
-1. 次の安全な候補はpeak-memory fixtureの実測。結果を基にline-count budgetまたは
-   streaming parserの互換性境界を決める。Release / tagはowner gateのまま触れない。
+1. 次の安全な候補はLINE-BUDGET-01。decode / line-state list生成前にraw newline
+   countをfail closedできるcap、固定path-free診断、exact / limit+1、no-write、
+   LF / CRLF / BOM互換性を先に設計する。Release / tagはowner gateのまま触れない。

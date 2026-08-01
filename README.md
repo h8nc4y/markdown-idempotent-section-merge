@@ -384,8 +384,13 @@ frontmatter・fence・CommonMark HTML type 1〜7 を排他的に走査します�
   canonical-block input is limited to 2 MiB. All limits include BOM and
   line-ending bytes. These limits bound snapshot I/O and persisted output, not
   Python peak memory: UTF-8 decoding, line/state lists, output construction,
-  and CRLF normalization can use more memory than the raw inputs. A separate
-  line-count budget and a streaming parser remain out of scope.
+  and CRLF normalization can use more memory than the raw inputs. The synthetic
+  8 MiB characterization measured a 230.06 MiB median process peak for the
+  densest LF replacement on Windows / CPython 3.11; this is descriptive, not a
+  cross-platform guarantee. See
+  [the peak-memory characterization](docs/peak-memory-characterization.md).
+  The runtime still has no separate line-count budget or streaming parser;
+  the measured next step is to evaluate a line-count budget first.
 - The reference implementation accepts a missing target or an existing
   ordinary file with one hard link. Symbolic links and multi-hard-link files
   are refused; choose the intended ordinary file path explicitly.
@@ -431,6 +436,18 @@ python3 scripts/test_merge_section.py
 pwsh -NoProfile -File ./scripts/test-scan-private-markers.ps1
 pwsh -NoProfile -File ./scripts/scan-private-markers.ps1
 ```
+
+The CI suite runs a 64 KiB subprocess/schema regression through
+`test_merge_section.py`. To repeat the descriptive full 8 MiB peak-RSS matrix
+without turning its values into pass/fail thresholds, run:
+
+```powershell
+python scripts/measure_peak_memory.py --repetitions 3 --timeout-seconds 180
+```
+
+The command uses synthetic data only and emits one path-free JSON record.
+Environment-specific results and metric limitations are documented in
+[the peak-memory characterization](docs/peak-memory-characterization.md).
 
 The Windows ownership-transfer regression deliberately replaces the live
 target-metadata guard with an exact-argument spy. That test therefore measures

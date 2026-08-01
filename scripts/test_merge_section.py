@@ -22,6 +22,7 @@ and verify that ambiguous artifacts are retained instead of guessed away.
 """
 
 import io
+import json
 import os
 import stat
 import subprocess
@@ -35,6 +36,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 import merge_section  # noqa: E402  (import after sys.path setup)
+import measure_peak_memory  # noqa: E402  (import after sys.path setup)
 
 REPO_ROOT = SCRIPTS_DIR.parent
 FIXTURES = REPO_ROOT / "tests" / "fixtures"
@@ -4524,6 +4526,267 @@ class FileLevelTests(unittest.TestCase):
             merge_section.merge_file(target, block)
 
         self.assertEqual(peer.read_bytes(), b"# Doc\n\n## Notes\n\nold.\n")
+
+
+class PeakMemoryMeasurementTests(unittest.TestCase):
+    """縮小fixtureで計測CLIのprocess・schema契約だけを固定する。"""
+
+    def test_reduced_matrix_reports_actions_bytes_and_peak_metrics(self):
+        # CIでは64 KiBへ縮小し、OS依存のpeak値そのものは合否に使わない。
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPTS_DIR / "measure_peak_memory.py"),
+                "--target-bytes",
+                str(64 * 1024),
+                "--repetitions",
+                "1",
+                "--timeout-seconds",
+                "30",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+        self.assertEqual(result.returncode, 0, "measurement CLI failed")
+        report = json.loads(result.stdout)
+        self.assertEqual(report["schema_version"], 1)
+        self.assertEqual(report["measurement"], "process-peak-rss")
+        self.assertEqual(report["configuration"]["target_bytes"], 64 * 1024)
+        self.assertEqual(report["configuration"]["repetitions"], 1)
+
+        expected_actions = {
+            "lf-short-lines-append": "appended",
+            "lf-short-lines-replace": "replaced",
+            "crlf-short-lines-append": "appended",
+            "crlf-short-lines-replace": "replaced",
+            "mixed-eol-normalize": "normalized",
+        }
+        cases = {case["case_id"]: case for case in report["cases"]}
+        self.assertEqual(set(cases), set(expected_actions))
+
+        for case_id, expected_action in expected_actions.items():
+            with self.subTest(case_id=case_id):
+                samples = cases[case_id]["samples"]
+                self.assertEqual(len(samples), 1)
+                sample = samples[0]
+                self.assertEqual(sample["actual_action"], expected_action)
+                self.assertEqual(sample["expected_action"], expected_action)
+                self.assertTrue(sample["changed"])
+                self.assertGreater(sample["target_line_count"], 0)
+                self.assertGreater(sample["peak_bytes"], 0)
+                self.assertIsNone(sample["current_bytes"])
+                self.assertIsNone(sample["tracer_overhead_bytes"])
+                self.assertLessEqual(sample["target_bytes_before"], 64 * 1024)
+                self.assertLessEqual(sample["final_bytes"], 64 * 1024)
+                self.assertEqual(sample["temporary_artifact_count"], 0)
+
+        # LF append/replaceはproduction上限と同じexact-output closureを縮小再現する。
+        for case_id in ("lf-short-lines-append", "lf-short-lines-replace"):
+            self.assertEqual(
+                cases[case_id]["samples"][0]["final_bytes"],
+                64 * 1024,
+            )
+
+        # stdoutは再現可能なJSONだけとし、temporary pathを証跡へ混ぜない。
+        self.assertNotIn("work_dir", result.stdout)
+        self.assertNotIn(str(REPO_ROOT), result.stdout)
+
+        # tracemallocは高オーバーヘッドの補助metricとして最小caseでも契約を固定する。
+        traced = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPTS_DIR / "measure_peak_memory.py"),
+                "--target-bytes",
+                str(16 * 1024),
+                "--repetitions",
+                "1",
+                "--timeout-seconds",
+                "30",
+                "--metric",
+                "python-tracemalloc",
+                "--case",
+                "lf-short-lines-append",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(traced.returncode, 0, "tracemalloc worker failed")
+        traced_report = json.loads(traced.stdout)
+        self.assertEqual(traced_report["measurement"], "python-tracemalloc")
+        traced_sample = traced_report["cases"][0]["samples"][0]
+        self.assertGreater(traced_sample["peak_bytes"], 0)
+        self.assertGreaterEqual(
+            traced_sample["peak_bytes"],
+            traced_sample["current_bytes"],
+        )
+        self.assertGreater(traced_sample["tracer_overhead_bytes"], 0)
+
+        # key集合だけでなくaction等の意味契約も親processで再検証する。
+        invalid_sample = dict(cases["lf-short-lines-append"]["samples"][0])
+        invalid_sample["actual_action"] = "unchanged"
+        with self.assertRaisesRegex(
+            measure_peak_memory.MeasurementError,
+            "action contract",
+        ):
+            measure_peak_memory._validate_worker_record(
+                {
+                    "schema_version": 1,
+                    "ok": True,
+                    "sample": invalid_sample,
+                },
+                "lf-short-lines-append",
+                1,
+                64 * 1024,
+                measure_peak_memory.PROCESS_PEAK_METRIC,
+            )
+
+        for nonfinite in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(nonfinite=repr(nonfinite)):
+                nonfinite_sample = dict(
+                    cases["lf-short-lines-append"]["samples"][0]
+                )
+                nonfinite_sample["peak_to_input_ratio"] = nonfinite
+                with self.assertRaisesRegex(
+                    measure_peak_memory.MeasurementError,
+                    "numeric contract",
+                ):
+                    measure_peak_memory._validate_worker_record(
+                        {
+                            "schema_version": 1,
+                            "ok": True,
+                            "sample": nonfinite_sample,
+                        },
+                        "lf-short-lines-append",
+                        1,
+                        64 * 1024,
+                        measure_peak_memory.PROCESS_PEAK_METRIC,
+                    )
+
+        mismatched_ratio = dict(cases["lf-short-lines-append"]["samples"][0])
+        mismatched_ratio["peak_to_input_ratio"] += 1
+        with self.assertRaisesRegex(
+            measure_peak_memory.MeasurementError,
+            "ratio contract",
+        ):
+            measure_peak_memory._validate_worker_record(
+                {"schema_version": 1, "ok": True, "sample": mismatched_ratio},
+                "lf-short-lines-append",
+                1,
+                64 * 1024,
+                measure_peak_memory.PROCESS_PEAK_METRIC,
+            )
+
+    def test_worker_output_is_stopped_at_limit_plus_one(self):
+        # stdout/stderrのどちらでも、全量captureせず上限+1でchildをkillする。
+        for stream_name in ("stdout", "stderr"):
+            with self.subTest(stream=stream_name):
+                noisy_child = (
+                    "import sys,time; stream=sys.%s.buffer; "
+                    "stream.write(b'x' * %d); stream.flush(); time.sleep(10)"
+                    % (
+                        stream_name,
+                        measure_peak_memory.MAX_WORKER_OUTPUT_BYTES + 1,
+                    )
+                )
+                with self.assertRaisesRegex(
+                    measure_peak_memory.MeasurementError,
+                    "output exceeded",
+                ):
+                    measure_peak_memory._run_bounded_process(
+                        [sys.executable, "-c", noisy_child],
+                        5,
+                    )
+
+    def test_worker_timeout_uses_fixed_bounded_diagnostic(self):
+        with self.assertRaisesRegex(
+            measure_peak_memory.MeasurementError,
+            "worker timed out",
+        ):
+            measure_peak_memory._run_bounded_process(
+                [sys.executable, "-c", "import time; time.sleep(10)"],
+                1,
+            )
+
+    def test_public_boundary_hides_unexpected_exception_details(self):
+        marker = "private-temporary-path-marker"
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(
+                measure_peak_memory,
+                "_build_report",
+                side_effect=OSError(marker),
+            ),
+            mock.patch.object(sys, "stderr", stderr),
+        ):
+            result = measure_peak_memory.main(["--target-bytes", "16384"])
+
+        self.assertEqual(result, 2)
+        self.assertEqual(stderr.getvalue(), "error: measurement failed\n")
+        self.assertNotIn(marker, stderr.getvalue())
+
+    def test_partial_thread_start_baseexception_reaps_worker(self):
+        captured = {}
+        original_popen = measure_peak_memory.subprocess.Popen
+        original_start = measure_peak_memory.threading.Thread.start
+        start_count = 0
+
+        def capture_process(*args, **kwargs):
+            process = original_popen(*args, **kwargs)
+            captured["process"] = process
+            return process
+
+        def fail_second_start(thread):
+            nonlocal start_count
+            start_count += 1
+            if start_count == 2:
+                raise KeyboardInterrupt("synthetic thread start interruption")
+            return original_start(thread)
+
+        with (
+            mock.patch.object(
+                measure_peak_memory.subprocess,
+                "Popen",
+                side_effect=capture_process,
+            ),
+            mock.patch.object(
+                measure_peak_memory.threading.Thread,
+                "start",
+                new=fail_second_start,
+            ),
+            self.assertRaisesRegex(KeyboardInterrupt, "start interruption"),
+        ):
+            measure_peak_memory._run_bounded_process(
+                [sys.executable, "-c", "import time; time.sleep(10)"],
+                5,
+            )
+
+        self.assertIsNotNone(captured["process"].poll())
+
+    def test_stdout_failure_is_inside_path_free_public_boundary(self):
+        marker = "private-stdout-path-marker"
+        stderr = io.StringIO()
+
+        class FailingStdout:
+            def write(self, _value):
+                raise OSError(marker)
+
+        with (
+            mock.patch.object(
+                measure_peak_memory,
+                "_build_report",
+                return_value={"schema_version": 1},
+            ),
+            mock.patch.object(sys, "stdout", FailingStdout()),
+            mock.patch.object(sys, "stderr", stderr),
+        ):
+            result = measure_peak_memory.main(["--target-bytes", "16384"])
+
+        self.assertEqual(result, 2)
+        self.assertEqual(stderr.getvalue(), "error: measurement failed\n")
+        self.assertNotIn(marker, stderr.getvalue())
 
 
 if __name__ == "__main__":

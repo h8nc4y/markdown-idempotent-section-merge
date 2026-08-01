@@ -6,6 +6,14 @@ The format loosely follows Keep a Changelog conventions.
 
 ## Unreleased
 
+### Added
+
+- Add a synthetic peak-memory characterization CLI that runs LF/CRLF
+  append/replace and mixed-EOL normalization in fresh bounded subprocesses.
+  Record low-overhead process peak RSS by default, keep `tracemalloc` as an
+  explicit high-overhead diagnostic, and document exact 8 MiB Windows /
+  CPython 3.11 results without making environment-specific values CI gates.
+
 ### Changed
 
 - Cap the final merged raw output at the target's 8 MiB input boundary after
