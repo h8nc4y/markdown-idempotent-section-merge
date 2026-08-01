@@ -189,6 +189,13 @@ recheck. Replacement and recovery snapshots use the already-known expected
 payload length rather than an unbounded read. The same no-write rejection
 applies to normal merge and `--check`.
 
+After the initial target and canonical-block snapshots, raw LF bytes are
+counted before the respective UTF-8 decoding: `TARGET.md` may contain at most
+1,000,000 newlines and `SECTION.md` at most 250,000. A CRLF ending contains one
+LF byte and therefore counts once; a BOM does not affect the count. Exact-limit
+input is accepted, while limit-plus-one input exits 2 with a fixed, path-free
+diagnostic before that input's UTF-8 decoding or any write.
+
 The final merged raw output is independently limited to the same 8 MiB after
 the UTF-8 BOM and selected LF/CRLF endings are restored. An exact-limit output
 is written and remains a byte-identical no-op on the next run. A limit-plus-one
@@ -382,15 +389,21 @@ frontmatter・fence・CommonMark HTML type 1〜7 を排他的に走査します�
   `normalized`).
 - Raw target input and final merged output are limited to 8 MiB; raw
   canonical-block input is limited to 2 MiB. All limits include BOM and
-  line-ending bytes. These limits bound snapshot I/O and persisted output, not
+  line-ending bytes. Raw newline counts are independently limited to 1,000,000
+  for the target and final output, and 250,000 for the canonical block. CRLF
+  counts once through its LF byte. Exact limits succeed, including an exact
+  final-output limit that is a no-op on the next run; limit-plus-one input
+  fails before that input's decoding, and limit-plus-one output fails before
+  temporary-file creation, with fixed path-free diagnostics. These limits bound snapshot I/O
+  and persisted output, not
   Python peak memory: UTF-8 decoding, line/state lists, output construction,
   and CRLF normalization can use more memory than the raw inputs. The synthetic
   8 MiB characterization measured a 230.06 MiB median process peak for the
   densest LF replacement on Windows / CPython 3.11; this is descriptive, not a
   cross-platform guarantee. See
   [the peak-memory characterization](docs/peak-memory-characterization.md).
-  The runtime still has no separate line-count budget or streaming parser;
-  the measured next step is to evaluate a line-count budget first.
+  The runtime has no streaming parser, so the line-count budget reduces the
+  worst accepted density but is not a strict process-memory guarantee.
 - The reference implementation accepts a missing target or an existing
   ordinary file with one hard link. Symbolic links and multi-hard-link files
   are refused; choose the intended ordinary file path explicitly.
@@ -438,15 +451,19 @@ pwsh -NoProfile -File ./scripts/scan-private-markers.ps1
 ```
 
 The CI suite runs a 64 KiB subprocess/schema regression through
-`test_merge_section.py`. To repeat the descriptive full 8 MiB peak-RSS matrix
-without turning its values into pass/fail thresholds, run:
+`test_merge_section.py`. The current health-check matrix defaults to 1 MiB so
+all dense-line cases remain inside the production newline budget:
 
 ```powershell
-python scripts/measure_peak_memory.py --repetitions 3 --timeout-seconds 180
+python scripts/measure_peak_memory.py --repetitions 1 --timeout-seconds 60
 ```
 
 The command uses synthetic data only and emits one path-free JSON record.
-Environment-specific results and metric limitations are documented in
+The documented exact-8-MiB matrix is historical evidence from commit
+`da8991d`, before the newline budget was added. Explicit 8 MiB dense fixtures
+on current code are intentionally rejected; reproduce the historical matrix
+only from that commit in an isolated checkout. Environment-specific results
+and metric limitations are documented in
 [the peak-memory characterization](docs/peak-memory-characterization.md).
 
 The Windows ownership-transfer regression deliberately replaces the live
