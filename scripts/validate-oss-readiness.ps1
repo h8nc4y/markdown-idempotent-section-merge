@@ -252,7 +252,7 @@ function Test-WorkflowExecutionContract {
         '    timeout-minutes: 25',
         '    steps:',
         '      - name: Check out repository',
-        '        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5',
+        '        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1',
         '        with:',
         '          persist-credentials: false',
         '      - name: Set up Python',
@@ -395,7 +395,7 @@ function Assert-WorkflowExecutionContract {
     $requiredStepBlocks = [ordered]@{
         checkout = @(
             '      - name: Check out repository',
-            '        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5',
+            '        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1',
             '        with:',
             '          persist-credentials: false'
         ) -join "`n"
@@ -477,6 +477,43 @@ function Assert-WorkflowExecutionContract {
         (Test-WorkflowExecutionContract -Content $persistCredentialsTrueMutation)
     ) {
         Add-Failure 'Workflow contract self-test did not reject persisted checkout credentials.'
+    }
+
+    # checkoutはfull SHAと人間向けversion commentを一つのcanonical lineとして固定する。
+    # mutable tag、旧pin、表示だけ古いcommentを別々に壊し、値と表示の両driftを拒否する。
+    $canonicalCheckoutUse =
+        '        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1'
+    $mutableCheckoutMutation = $content.Replace(
+        $canonicalCheckoutUse,
+        '        uses: actions/checkout@v7 # v7.0.1'
+    )
+    if (
+        $mutableCheckoutMutation -ceq $content -or
+        (Test-WorkflowExecutionContract -Content $mutableCheckoutMutation)
+    ) {
+        Add-Failure 'Workflow contract self-test did not reject a mutable checkout major tag.'
+    }
+
+    $oldCheckoutMutation = $content.Replace(
+        $canonicalCheckoutUse,
+        '        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v7.0.1'
+    )
+    if (
+        $oldCheckoutMutation -ceq $content -or
+        (Test-WorkflowExecutionContract -Content $oldCheckoutMutation)
+    ) {
+        Add-Failure 'Workflow contract self-test did not reject the previous checkout revision.'
+    }
+
+    $staleCheckoutCommentMutation = $content.Replace(
+        $canonicalCheckoutUse,
+        '        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5.1.0'
+    )
+    if (
+        $staleCheckoutCommentMutation -ceq $content -or
+        (Test-WorkflowExecutionContract -Content $staleCheckoutCommentMutation)
+    ) {
+        Add-Failure 'Workflow contract self-test did not reject a stale checkout version comment.'
     }
 
     # supply-chain pinは値だけでなくimmutable形も自己検証する。mutable majorや
@@ -835,6 +872,7 @@ $requiredFiles = @(
     'docs/SKILL.ja.md',
     'docs/closing-hash-managed-heading-contract.md',
     'docs/commonmark-ascii-whitespace-contract.md',
+    'docs/checkout-v7-upgrade.md',
     'docs/frontmatter-heading-scan-contract.md',
     'docs/html-block-heading-scan-contract.md',
     'docs/macos-ci-contract.md',
@@ -876,6 +914,7 @@ Assert-FileContains -RelativePath 'README.md' -Pattern '(?is)raw LF bytes.*1,000
 Assert-FileContains -RelativePath 'README.md' -Pattern 'docs/closing-hash-managed-heading-contract\.md' -Description 'link to the closing-hash identity contract'
 Assert-FileContains -RelativePath 'README.md' -Pattern 'docs/commonmark-ascii-whitespace-contract\.md' -Description 'link to the CommonMark ASCII whitespace contract'
 Assert-FileContains -RelativePath 'README.md' -Pattern '\[the setup-python Node\.js 24 pin contract\]\(docs/setup-python-node24-pin-contract\.md\)' -Description 'exact link to the setup-python Node.js 24 pin contract'
+Assert-FileContains -RelativePath 'README.md' -Pattern '\[the checkout v7\.0\.1 pin contract\]\(docs/checkout-v7-upgrade\.md\)' -Description 'exact link to the checkout v7.0.1 pin contract'
 Assert-FileContains -RelativePath 'SKILL.md' -Pattern '(?is)closing-hash block heading.*ambiguous managed-heading.*refuse without writing' -Description 'closing-hash fail-closed contract'
 Assert-FileContains -RelativePath 'docs/SKILL.ja.md' -Pattern '(?is)閉じハッシュ形式.*同一性が曖昧.*no-write' -Description 'Japanese closing-hash fail-closed contract'
 Assert-FileContains -RelativePath 'SKILL.md' -Pattern '(?is)ASCII-only block whitespace.*NBSP.*EM SPACE.*form feed.*vertical tab' -Description 'CommonMark ASCII-only block whitespace contract'
@@ -932,7 +971,7 @@ Assert-FileContains -RelativePath 'docs/peak-memory-characterization.md' -Patter
 Assert-FileContains -RelativePath 'scripts/measure_peak_memory.py' -Pattern '(?is)PROCESS_PEAK_METRIC\s*=\s*"process-peak-rss".*TRACEMALLOC_METRIC\s*=\s*"python-tracemalloc".*MAX_WORKER_OUTPUT_BYTES.*subprocess\.Popen.*process\.wait\(timeout=timeout_seconds\).*process\.kill' -Description 'bounded dual-metric peak-memory worker contract'
 Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern 'scan-private-markers\.ps1' -Description 'private marker scan in CI'
 Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern 'test-scan-private-markers\.ps1' -Description 'private marker scan self-test in CI'
-Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern '(?m)^\s*uses:\s*actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09(?:\s+#\s*v5)?\s*$' -Description 'exact immutable checkout action revision'
+Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern '(?m)^\s*uses:\s*actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\s+#\s*v7\.0\.1\s*$' -Description 'exact immutable checkout action revision and version comment'
 Assert-FileContains -RelativePath '.github/workflows/validate.yml' -Pattern '(?m)^\s*uses:\s*actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97\s+#\s*v7\.0\.0\s*$' -Description 'exact immutable setup-python action revision'
 Assert-WorkflowExecutionContract
 
