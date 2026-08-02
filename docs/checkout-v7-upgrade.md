@@ -45,13 +45,16 @@
 
 ## Handoff
 
-- **状態:** baseline / provenance / compatibility確認済み。validator-first REDは両PowerShellで
-  2 diagnostics、v7.0.1 canonical pin更新後は3 negative mutationを含めて両方GREEN。
-  Python 176 testsと両runtimeのprivate-marker self-test / actual scanも成功した。
-  Gitleaksはworktree finding 0、Semgrep `p/security-audit`は6 targets / 2 rulesで
-  finding 0。`actionlint`はhostに未導入のため未実行・未確認。独立code reviewのP2は、
-  mutable / old-pin mutationで正しいversion commentを保ちrefだけを壊すよう分離して修復し、
-  両PowerShell readinessはGREEN。P2修復後の独立再review 2系統はP0〜P3すべて0。
-  exact staged GitleaksとSemgrep 6 targets / 2 rulesはfinding 0。
-- **未確認:** v7変更後のPR / main CI。production、deployment、OAuth、secret、実データ、
-  paid operation、Release / tagは実行しない。
+- **状態:** CHECKOUT-V7-01のsource integration baselineはPR #32 merge
+  `4715ebe749f978fb97c00daf636886b9ef7886e9`。feature head
+  `30041d573c822e7b48a72d94fb8f6cdcd65872b0`はmergeの祖先で、head / merge treeは
+  `66bcdf8e3448a28240b4c5a6f7555839b4de513e`で一致する。PR run
+  `30749518917`とmain push run `30749727042`はWindows / Ubuntu / macOS 15の
+  3 jobが成功し、check annotationは各0。feature branchはlocal / remoteからcleanup済み。
+- **post-main:** PowerShell 7 / 5.1 readinessとactual private-marker scanは成功。
+  Python suiteとscanner self-testはlocalでは再実行せず、exact-main CIで成功した。
+- **未確認:** `actionlint`はhostに未導入のため未実行・未確認。
+- **未実行:** production、deployment、OAuth、secret、実データ、paid operation、
+  Release / tag。
+- **保持:** LINE-BUDGET-01のlocal branch、分離worktree、ignored cacheは
+  policy-rejected cleanup residueとして変更せず、cleanupを再試行しない。
