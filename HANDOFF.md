@@ -2,18 +2,19 @@
 
 ## Current goal
 
-CHECKOUT-V7-01（Class M）としてvalidation workflowのcheckoutを公式v7.0.1 verified
-full commit SHAへ更新する。LINE-BUDGET-01の統合済み状態とpolicy-rejected cleanup residueは
-変更せず、Release / tagはowner gateのまま触れない。
+CHECKOUT-V7-01（Class M）のsource integration baselineと検証証跡を保持する。
+LINE-BUDGET-01の統合済み状態とpolicy-rejected cleanup residueは変更せず、
+Release / tagはowner gateのまま触れない。
 
 ## Current state
 
-- CHECKOUT-V7-01 baselineではlocal main / origin / live mainが
-  `8c9f6d1b9b4c6e9ad0757bca052209c7c09e3653`で一致し、exact-main run
-  `30694827311`はWindows / Ubuntu / macOS 15の3 jobが成功した。
-- 現行checkout v5.1.0 pinと採用するv7.0.1 pinはいずれもNode.js 24 runtime。
-  v7.0.1はverified tag commit `3d3c42e5aac5ba805825da76410c181273ba90b1`を
-  full SHAで固定する。実装契約は`docs/checkout-v7-upgrade.md`。
+- CHECKOUT-V7-01のsource integration baselineはPR #32 merge
+  `4715ebe749f978fb97c00daf636886b9ef7886e9`。
+- PR #32 head `30041d573c822e7b48a72d94fb8f6cdcd65872b0`はmergeの祖先で、
+  head / merge treeは`66bcdf8e3448a28240b4c5a6f7555839b4de513e`で一致する。
+- checkout v5.1.0 / v7.0.1はいずれもNode.js 24 runtime。v7.0.1のverified tag commit
+  `3d3c42e5aac5ba805825da76410c181273ba90b1`をfull SHAで固定した。
+  実装契約は`docs/checkout-v7-upgrade.md`。feature branchはlocal / remoteからcleanup済み。
 - LINE-BUDGET-01のsource integration baselineはPR #30 merge
   `fe36c0ca7094e034f12cae1449de82fc70fd194e`。
 - PR #30 head `ec842253616374b7706061ccef517b37576968f3`はmergeの祖先で、
@@ -56,7 +57,10 @@ full commit SHAへ更新する。LINE-BUDGET-01の統合済み状態とpolicy-re
   保ったままrefだけを壊すmutationへ分離し、両PowerShell readinessはGREEN。
 - P2修復後の独立再review 2系統はP0〜P3すべて0。exact staged Gitleaksはfinding 0、
   Semgrep `p/security-audit`は6 targets / 2 rulesでfinding 0。
-  PR / main CIは未確認。
+- PR #32 run `30749518917`とmerge commitのmain push run `30749727042`は、
+  Windows / Ubuntu / macOS 15の3 jobが成功し、check annotationは各0。
+- post-main local readinessとactual private-marker scanはPowerShell 7 / 5.1とも成功した。
+  Python suiteとscanner self-testはpost-main localでは再実行せず、exact-main CIで成功した。
 - TDD RED: 新規5 testsが未実装helper / constantsで13 errors。
 - focused newline-budget 5 tests: `OK`。
 - focused newline-budget + peak-default 6 tests: `OK`。
@@ -92,8 +96,8 @@ full commit SHAへ更新する。LINE-BUDGET-01の統合済み状態とpolicy-re
 - `README.md`, `SECURITY.md`, `SKILL.md`, `docs/SKILL.ja.md`
 - `scripts/validate-oss-readiness.ps1`, `CHANGELOG.md`
 
-1. validator-first TDDでmutable / legacy / stale-comment mutationとv7.0.1 canonical pinを
-   実装し、local gate、独立review、PR / post-main CIまで確認する。
+1. CHECKOUT-V7-01のsource integrationは完了。新しい再現可能な契約不備、Issue、
+   PR feedback、CI failureがなければ別repoへ進む。
 2. 大規模互換要件が具体化した場合だけ、streaming parserを別Class Lで検討する。
 3. Release / tagはowner gateのまま実行しない。
 4. 保持中のlocal branch / worktree / ignored residueを変更せず、同じcleanup failure classを
