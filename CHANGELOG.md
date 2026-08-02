@@ -16,6 +16,11 @@ The format loosely follows Keep a Changelog conventions.
 
 ### Changed
 
+- Pin `actions/checkout` to the official v7.0.1 verified full commit SHA while
+  retaining the Node.js 24 runtime, read-only permission, credential isolation,
+  3 OS matrix, timeout, step order, and commands. Extend the exact workflow
+  validator with mutable-tag, previous-SHA, and stale-version-comment rejection
+  mutations.
 - Cap raw LF bytes at 1,000,000 for target input and final output, and 250,000
   for canonical-block input. Accept exact limits, reject limit-plus-one input
   before UTF-8 decoding and output before temporary creation with fixed

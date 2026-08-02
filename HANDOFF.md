@@ -2,11 +2,18 @@
 
 ## Current goal
 
-LINE-BUDGET-01（Class M）の統合済み状態と検証証跡を保持する。
-policy-rejected cleanup residueは変更せず、Release / tagはowner gateのまま触れない。
+CHECKOUT-V7-01（Class M）としてvalidation workflowのcheckoutを公式v7.0.1 verified
+full commit SHAへ更新する。LINE-BUDGET-01の統合済み状態とpolicy-rejected cleanup residueは
+変更せず、Release / tagはowner gateのまま触れない。
 
 ## Current state
 
+- CHECKOUT-V7-01 baselineではlocal main / origin / live mainが
+  `8c9f6d1b9b4c6e9ad0757bca052209c7c09e3653`で一致し、exact-main run
+  `30694827311`はWindows / Ubuntu / macOS 15の3 jobが成功した。
+- 現行checkout v5.1.0 pinと採用するv7.0.1 pinはいずれもNode.js 24 runtime。
+  v7.0.1はverified tag commit `3d3c42e5aac5ba805825da76410c181273ba90b1`を
+  full SHAで固定する。実装契約は`docs/checkout-v7-upgrade.md`。
 - LINE-BUDGET-01のsource integration baselineはPR #30 merge
   `fe36c0ca7094e034f12cae1449de82fc70fd194e`。
 - PR #30 head `ec842253616374b7706061ccef517b37576968f3`はmergeの祖先で、
@@ -34,6 +41,22 @@ policy-rejected cleanup residueは変更せず、Release / tagはowner gateの�
 
 ## Evidence so far
 
+- CHECKOUT-V7-01 baselineはPowerShell 7 / 5.1 readiness、Python 176 tests
+  `OK (skipped=15)`、両runtimeのprivate-marker self-test / actual scanが成功した。
+- validator-first TDDではworkflowを旧v5.1.0 pinのままにして、両PowerShellがexact v7 pin
+  欠落とstructured workflow不一致の2 diagnosticsでREDになった。v7.0.1 full SHA更新後は
+  mutable `@v7`、旧SHA、stale version comment mutationを含めて両方GREENへ戻った。
+- candidateはPython 176 tests `OK (skipped=15)`。private-marker self-testは
+  PowerShell 7で179.3秒、Windows PowerShell 5.1で124.4秒、actual scanは10.6秒 / 5.4秒で
+  すべて成功した。Gitleaksはworktree finding 0、Semgrep
+  `p/security-audit`は6 targets / 2 rulesでfinding 0。`actionlint`はhostに未導入のため
+  未実行・未確認。
+- 独立code reviewは、mutable / old-pin mutationがversion commentも同時に壊し、ref検査の
+  退行をcomment違反だけで拒否できるfalse-greenをP2として検出した。正しいv7.0.1 commentを
+  保ったままrefだけを壊すmutationへ分離し、両PowerShell readinessはGREEN。
+- P2修復後の独立再review 2系統はP0〜P3すべて0。exact staged Gitleaksはfinding 0、
+  Semgrep `p/security-audit`は6 targets / 2 rulesでfinding 0。
+  PR / main CIは未確認。
 - TDD RED: 新規5 testsが未実装helper / constantsで13 errors。
 - focused newline-budget 5 tests: `OK`。
 - focused newline-budget + peak-default 6 tests: `OK`。
@@ -69,8 +92,9 @@ policy-rejected cleanup residueは変更せず、Release / tagはowner gateの�
 - `README.md`, `SECURITY.md`, `SKILL.md`, `docs/SKILL.ja.md`
 - `scripts/validate-oss-readiness.ps1`, `CHANGELOG.md`
 
-1. 現在のlocal-safe backlogはない。具体的な大規模互換要件が確認された場合だけ、
-   streaming parserを別Class Lで検討する。
-2. Release / tagはowner gateのまま実行しない。
-3. 保持中のlocal branch / worktree / ignored residueを変更せず、同じcleanup failure classを
+1. validator-first TDDでmutable / legacy / stale-comment mutationとv7.0.1 canonical pinを
+   実装し、local gate、独立review、PR / post-main CIまで確認する。
+2. 大規模互換要件が具体化した場合だけ、streaming parserを別Class Lで検討する。
+3. Release / tagはowner gateのまま実行しない。
+4. 保持中のlocal branch / worktree / ignored residueを変更せず、同じcleanup failure classを
    再試行しない。
